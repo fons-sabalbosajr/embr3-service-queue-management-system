@@ -20,13 +20,21 @@ function accessModulesForRole(role) {
         'developer',
         'settings',
         'queue-officer',
+        'queue-officer-serving-desk',
+        'queue-officer-portal',
         'secretariat',
         'queue-dashboard',
       ];
     case 'Admin':
       return ['dashboard', 'settings', 'queue-dashboard'];
     case 'Queue Officer':
-      return ['dashboard', 'queue-officer', 'queue-dashboard'];
+      return [
+        'dashboard',
+        'queue-officer',
+        'queue-officer-serving-desk',
+        'queue-officer-portal',
+        'queue-dashboard',
+      ];
     case 'Secretariat':
       return ['dashboard', 'secretariat', 'queue-dashboard'];
     default:

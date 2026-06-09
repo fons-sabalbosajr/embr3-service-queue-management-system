@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
+  SafetyCertificateOutlined,
   TeamOutlined,
   UserSwitchOutlined,
 } from '@ant-design/icons';
@@ -18,6 +19,7 @@ import {
   Row,
   Select,
   Space,
+  Switch,
   Statistic,
   Table,
   Tag,
@@ -38,14 +40,50 @@ const TRANSACTION_OPTIONS = [
   'Certification',
 ];
 
+const DEFAULT_OFFICER_ACCESS = [
+  'dashboard',
+  'queue-dashboard',
+  'queue-officer',
+  'queue-officer-serving-desk',
+  'queue-officer-portal',
+];
+
+const ACCESS_ROWS = [
+  {
+    key: 'dashboard',
+    label: 'Dashboard Menu',
+    description: 'Allow access to the home dashboard.',
+  },
+  {
+    key: 'queue-dashboard',
+    label: 'Public Queue Dashboard',
+    description: 'Allow launching the public queue board.',
+  },
+  {
+    key: 'queue-officer-serving-desk',
+    label: 'Serving Desk',
+    description: 'Show the serving desk menu page.',
+  },
+  {
+    key: 'queue-officer-portal',
+    label: 'My Queue Portal',
+    description: 'Show the queue officer portal page.',
+  },
+];
+
 export default function SettingsAssignedOfficers() {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const [officers, setOfficers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [accessSaving, setAccessSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [accessModalOpen, setAccessModalOpen] = useState(false);
   const [editingOfficer, setEditingOfficer] = useState(null);
+  const [selectedOfficer, setSelectedOfficer] = useState(null);
+  const [selectedAccessModules, setSelectedAccessModules] = useState(DEFAULT_OFFICER_ACCESS);
+  const [accountEnabled, setAccountEnabled] = useState(true);
 
   const loadOfficers = async () => {
     setLoading(true);
@@ -68,7 +106,13 @@ export default function SettingsAssignedOfficers() {
   const openCreateModal = () => {
     setEditingOfficer(null);
     form.resetFields();
-    form.setFieldsValue({ status: 'Available' });
+    form.setFieldsValue({
+      status: 'Available',
+      username: '',
+      password: '',
+      accountStatus: 'Active',
+      accessModules: DEFAULT_OFFICER_ACCESS,
+    });
     setModalOpen(true);
   };
 
@@ -76,12 +120,21 @@ export default function SettingsAssignedOfficers() {
     setEditingOfficer(record);
     form.setFieldsValue({
       name: record.name,
+      username: record.username,
       position: record.position,
       designation: record.designation,
       assignedTransaction: [record.assignedTransaction],
       status: record.status,
+      password: '',
     });
     setModalOpen(true);
+  };
+
+  const openAccessModal = (record) => {
+    setSelectedOfficer(record);
+    setSelectedAccessModules(record.accessModules || DEFAULT_OFFICER_ACCESS);
+    setAccountEnabled(record.accountStatus !== 'Inactive');
+    setAccessModalOpen(true);
   };
 
   const handleSubmit = async (values) => {
@@ -92,7 +145,13 @@ export default function SettingsAssignedOfficers() {
         assignedTransaction: Array.isArray(values.assignedTransaction)
           ? values.assignedTransaction[0]
           : values.assignedTransaction,
+        accountStatus: values.accountStatus || 'Active',
+        accessModules: values.accessModules || DEFAULT_OFFICER_ACCESS,
       };
+
+      if (!payload.password) {
+        delete payload.password;
+      }
 
       if (editingOfficer) {
         await apiClient.put(`/queue-officers/${editingOfficer._id}`, payload);
@@ -111,6 +170,29 @@ export default function SettingsAssignedOfficers() {
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveAccess = async () => {
+    if (!selectedOfficer) {
+      return;
+    }
+
+    setAccessSaving(true);
+    try {
+      await apiClient.patch(`/queue-officers/${selectedOfficer._id}/access`, {
+        accountStatus: accountEnabled ? 'Active' : 'Inactive',
+        accessModules: selectedAccessModules,
+      });
+      message.success('Queue officer access updated successfully.');
+      setAccessModalOpen(false);
+      loadOfficers();
+    } catch (error) {
+      message.error(
+        error.response?.data?.message || 'Unable to update queue officer access.'
+      );
+    } finally {
+      setAccessSaving(false);
     }
   };
 
@@ -164,6 +246,16 @@ export default function SettingsAssignedOfficers() {
       ),
     },
     {
+      title: 'Credentials',
+      key: 'credentials',
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{record.username}</Text>
+          <Text type="secondary">{record.accountStatus || 'Active'}</Text>
+        </Space>
+      ),
+    },
+    {
       title: 'Position',
       dataIndex: 'position',
       key: 'position',
@@ -178,6 +270,20 @@ export default function SettingsAssignedOfficers() {
       dataIndex: 'assignedTransaction',
       key: 'assignedTransaction',
       render: (value) => <Tag color="blue">{value}</Tag>,
+    },
+    {
+      title: 'Menu Access',
+      dataIndex: 'accessModules',
+      key: 'accessModules',
+      render: (value = []) =>
+        value
+          .filter((item) => item !== 'queue-officer')
+          .slice(0, 3)
+          .map((item) => (
+            <Tag key={item} color="purple">
+              {item}
+            </Tag>
+          )),
     },
     {
       title: 'Status',
@@ -195,6 +301,9 @@ export default function SettingsAssignedOfficers() {
           <Button icon={<EditOutlined />} onClick={() => openEditModal(record)}>
             Edit
           </Button>
+          <Button icon={<SafetyCertificateOutlined />} onClick={() => openAccessModal(record)}>
+            Manage Access
+          </Button>
           <Popconfirm
             title="Delete this queue officer?"
             description="This action cannot be undone."
@@ -205,6 +314,44 @@ export default function SettingsAssignedOfficers() {
             </Button>
           </Popconfirm>
         </Space>
+      ),
+    },
+  ];
+
+  const accessColumns = [
+    {
+      title: 'Portal Access Item',
+      dataIndex: 'label',
+      key: 'label',
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{record.label}</Text>
+          <Text type="secondary">{record.description}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Visible',
+      key: 'visible',
+      width: 120,
+      render: (_, record) => (
+        <Switch
+          checked={selectedAccessModules.includes(record.key)}
+          onChange={(checked) => {
+            setSelectedAccessModules((current) => {
+              const next = new Set(current.filter((item) => item !== 'queue-officer'));
+              if (checked) {
+                next.add(record.key);
+              } else {
+                next.delete(record.key);
+              }
+              if (next.has('queue-officer-serving-desk') || next.has('queue-officer-portal')) {
+                next.add('queue-officer');
+              }
+              return Array.from(next);
+            });
+          }}
+        />
       ),
     },
   ];
@@ -269,6 +416,16 @@ export default function SettingsAssignedOfficers() {
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Please enter a name.' }]}>
             <Input placeholder="Juan Officer" />
           </Form.Item>
+          <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Please enter a username.' }]}>
+            <Input placeholder="juan.officer" />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label={editingOfficer ? 'Password (optional)' : 'Password'}
+            rules={editingOfficer ? [] : [{ required: true, message: 'Please enter a password.' }]}
+          >
+            <Input.Password placeholder="At least 8 characters" />
+          </Form.Item>
           <Form.Item name="position" label="Position" rules={[{ required: true, message: 'Please enter a position.' }]}>
             <Input placeholder="Queue Supervisor" />
           </Form.Item>
@@ -296,6 +453,32 @@ export default function SettingsAssignedOfficers() {
             />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`Manage Access${selectedOfficer ? `: ${selectedOfficer.name}` : ''}`}
+        open={accessModalOpen}
+        onCancel={() => setAccessModalOpen(false)}
+        onOk={handleSaveAccess}
+        confirmLoading={accessSaving}
+        okText="Save Access"
+        width={760}
+      >
+        <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Space direction="vertical" size={0}>
+            <Text strong>Portal Account</Text>
+            <Text type="secondary">Enable or disable sign-in for this queue officer.</Text>
+          </Space>
+          <Switch checked={accountEnabled} onChange={setAccountEnabled} />
+        </div>
+
+        <Table
+          rowKey="key"
+          pagination={false}
+          columns={accessColumns}
+          dataSource={ACCESS_ROWS}
+          size="small"
+        />
       </Modal>
     </AdminShell>
   );

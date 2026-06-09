@@ -16,20 +16,15 @@ const DeveloperDatabaseStatusConnections = lazy(() =>
   import('./pages/admin/DeveloperDatabaseStatusConnections')
 )
 const DeveloperAppLogs = lazy(() => import('./pages/admin/DeveloperAppLogs'))
-const DeveloperDisplayConfig = lazy(() =>
-  import('./pages/admin/DeveloperDisplayConfig')
-)
 const QueueOfficerServingDesk = lazy(() =>
   import('./pages/admin/QueueOfficerServingDesk')
 )
+const MyQueuePortal = lazy(() => import('./pages/admin/MyQueuePortal'))
 const SecretariatStartTransaction = lazy(() =>
   import('./pages/admin/SecretariatStartTransaction')
 )
 const SettingsAssignedOfficers = lazy(() =>
   import('./pages/admin/SettingsAssignedOfficers')
-)
-const SettingsTimeQueueManagement = lazy(() =>
-  import('./pages/admin/SettingsTimeQueueManagement')
 )
 const SettingsTransactionMonitoring = lazy(() =>
   import('./pages/admin/SettingsTransactionMonitoring')
@@ -97,26 +92,10 @@ function App() {
           }
         />
         <Route
-          path="/home/developer/display-config"
-          element={
-            <ProtectedRoute>
-              <DeveloperDisplayConfig />
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/home/settings/queue-assigned-officers"
           element={
             <ProtectedRoute>
               <SettingsAssignedOfficers />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/home/settings/time-queue-management"
-          element={
-            <ProtectedRoute>
-              <SettingsTimeQueueManagement />
             </ProtectedRoute>
           }
         />
@@ -141,6 +120,14 @@ function App() {
           element={
             <ProtectedRoute>
               <QueueOfficerServingDesk />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/home/queue-officer/my-queue-portal"
+          element={
+            <ProtectedRoute>
+              <MyQueuePortal />
             </ProtectedRoute>
           }
         />

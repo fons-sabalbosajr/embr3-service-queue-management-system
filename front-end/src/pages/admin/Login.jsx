@@ -11,13 +11,33 @@ export default function Login() {
   const { persistSession } = useAuth();
   const navigate = useNavigate();
 
+  const resolveLandingRoute = (sessionAdmin) => {
+    const modules = sessionAdmin?.accessModules || [];
+    const accountType = sessionAdmin?.accountType;
+
+    // Admin/developer accounts always go to the main dashboard.
+    if (accountType === 'admin') {
+      return '/home';
+    }
+
+    if (modules.includes('queue-officer-portal')) {
+      return '/home/queue-officer/my-queue-portal';
+    }
+
+    if (modules.includes('queue-officer-serving-desk')) {
+      return '/home/queue-officer/serving-desk';
+    }
+
+    return '/home';
+  };
+
   const onFinish = async (values) => {
     setLoading(true);
     try {
       const { data } = await apiClient.post('/auth/login', values);
       persistSession(data);
       message.success('Welcome back!');
-      navigate('/home');
+      navigate(resolveLandingRoute(data.admin));
     } catch (error) {
       message.error(
         error.response?.data?.message || 'Unable to sign in. Try again.'
@@ -29,8 +49,8 @@ export default function Login() {
 
   return (
     <AuthLayout
-      title="Admin Sign In"
-      subtitle="Access the EMB R3 SQMS administration console."
+      title="SQMS Sign In"
+      subtitle="Access the EMB R3 SQMS console using your admin email or queue officer username."
       footer={
         <>
           Don&apos;t have an account? <Link to="/admin/signup">Create one</Link>
@@ -39,17 +59,14 @@ export default function Login() {
     >
       <Form layout="vertical" requiredMark={false} onFinish={onFinish}>
         <Form.Item
-          name="email"
-          label="Email"
-          rules={[
-            { required: true, message: 'Please enter your email.' },
-            { type: 'email', message: 'Enter a valid email.' },
-          ]}
+          name="identifier"
+          label="Email or Username"
+          rules={[{ required: true, message: 'Please enter your email or username.' }]}
         >
           <Input
             size="large"
             prefix={<MailOutlined />}
-            placeholder="admin@example.com"
+            placeholder="admin@example.com or officer.username"
           />
         </Form.Item>
 

@@ -18,18 +18,16 @@ async function getQueueDisplayConfig(_req, res) {
 
 async function updateQueueDisplaySettings(req, res) {
   try {
-    const { refreshSeconds, density, soundAlerts } = req.body;
+    const { refreshSeconds, density, soundAlerts, boardTitle, boardSubtitle, boardTitleSize, boardSubtitleSize } = req.body;
     const config = await ensureConfig();
 
-    if (refreshSeconds !== undefined) {
-      config.refreshSeconds = refreshSeconds;
-    }
-    if (density !== undefined) {
-      config.density = density;
-    }
-    if (soundAlerts !== undefined) {
-      config.soundAlerts = soundAlerts;
-    }
+    if (refreshSeconds !== undefined) config.refreshSeconds = refreshSeconds;
+    if (density !== undefined) config.density = density;
+    if (soundAlerts !== undefined) config.soundAlerts = soundAlerts;
+    if (boardTitle !== undefined) config.boardTitle = boardTitle;
+    if (boardSubtitle !== undefined) config.boardSubtitle = boardSubtitle;
+    if (boardTitleSize !== undefined) config.boardTitleSize = boardTitleSize;
+    if (boardSubtitleSize !== undefined) config.boardSubtitleSize = boardSubtitleSize;
 
     await config.save();
 
@@ -50,7 +48,7 @@ async function updateQueueDisplaySettings(req, res) {
 
 async function createQueueDisplayCard(req, res) {
   try {
-    const { transactionName } = req.body;
+    const { transactionName, active = true, order } = req.body;
 
     if (!transactionName) {
       return res.status(400).json({ message: 'Transaction name is required.' });
@@ -59,11 +57,15 @@ async function createQueueDisplayCard(req, res) {
     const config = await ensureConfig();
     const card = {
       transactionName,
-      order: config.counterCards.length,
-      active: true,
+      order: typeof order === 'number' ? Math.max(order, 0) : config.counterCards.length,
+      active,
     };
 
     config.counterCards.push(card);
+    config.counterCards.sort((a, b) => a.order - b.order);
+    config.counterCards.forEach((item, index) => {
+      item.order = index;
+    });
     await config.save();
 
     const createdCard = config.counterCards[config.counterCards.length - 1];
@@ -101,10 +103,13 @@ async function updateQueueDisplayCard(req, res) {
       card.active = active;
     }
     if (order !== undefined) {
-      card.order = order;
+      card.order = Math.max(order, 0);
     }
 
     config.counterCards.sort((a, b) => a.order - b.order);
+    config.counterCards.forEach((item, index) => {
+      item.order = index;
+    });
     await config.save();
 
     await logEvent({

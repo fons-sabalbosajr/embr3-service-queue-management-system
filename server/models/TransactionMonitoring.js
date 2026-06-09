@@ -2,6 +2,16 @@ const mongoose = require('mongoose');
 
 const transactionMonitoringSchema = new mongoose.Schema(
   {
+    queueOfficerId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    clientName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     clientCardNo: {
       type: String,
       required: true,
@@ -27,6 +37,11 @@ const transactionMonitoringSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    specificInquiry: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     companyOrApplicationNo: {
       type: String,
       default: '',
@@ -45,8 +60,8 @@ const transactionMonitoringSchema = new mongoose.Schema(
     clientCallStatus: {
       type: String,
       required: true,
-      enum: ['CALL', 'CLIENT MISSING', 'Done', 'Assisted'],
-      default: 'CALL',
+      enum: ['Queued', 'Waiting to Call', 'CALL', 'On Hold', 'Skipped', 'CLIENT MISSING', 'Done', 'Assisted'],
+      default: 'Queued',
     },
   },
   { timestamps: true }

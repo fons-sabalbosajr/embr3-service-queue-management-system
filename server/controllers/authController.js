@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const Admin = require('../models/Admin');
+const QueueOfficer = require('../models/QueueOfficer');
 const sendEmail = require('../utils/sendEmail');
 const { accessModulesForRole, normalizeRole } = require('../utils/roles');
 const {
@@ -10,8 +11,8 @@ const {
   welcomeTemplate,
 } = require('../utils/emailTemplates');
 
-function signToken(adminId) {
-  return jwt.sign({ id: adminId }, process.env.JWT_SECRET, {
+function signToken(id, type = 'admin') {
+  return jwt.sign({ id, type }, process.env.JWT_SECRET, {
     expiresIn: '7d',
   });
 }
@@ -24,11 +25,30 @@ function clientBaseUrl() {
 function publicAdmin(admin) {
   return {
     id: admin._id,
+    accountType: 'admin',
     name: admin.name,
     email: admin.email,
+    username: null,
     role: admin.role,
     status: admin.status,
     accessModules: admin.accessModules || [],
+  };
+}
+
+function publicOfficer(officer) {
+  return {
+    id: officer._id,
+    accountType: 'queue-officer',
+    name: officer.name,
+    email: null,
+    username: officer.username,
+    role: 'Queue Officer',
+    status: officer.accountStatus,
+    accessModules: officer.accessModules || [],
+    employeeId: officer.employeeId,
+    assignedTransaction: officer.assignedTransaction,
+    designation: officer.designation,
+    position: officer.position,
   };
 }
 
@@ -76,7 +96,7 @@ async function signup(req, res) {
       console.error('Welcome email failed:', emailError.message);
     }
 
-    const token = signToken(admin._id);
+    const token = signToken(admin._id, 'admin');
 
     return res.status(201).json({
       token,
@@ -91,36 +111,74 @@ async function signup(req, res) {
 // POST /api/auth/login
 async function login(req, res) {
   try {
-    const { email, password } = req.body;
+    const { identifier, email, username, password } = req.body;
+    const loginIdentifier = (identifier || email || username || '').trim();
 
-    if (!email || !password) {
+    if (!loginIdentifier || !password) {
       return res
         .status(400)
-        .json({ message: 'Email and password are required.' });
+        .json({ message: 'Username or email and password are required.' });
     }
 
-    const admin = await Admin.findOne({
-      email: email.toLowerCase(),
-    }).select('+password');
+    const normalizedIdentifier = loginIdentifier.toLowerCase();
+    const admin = await Admin.findOne({ email: normalizedIdentifier }).select('+password');
 
-    if (!admin) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
+    if (admin) {
+      const isMatch = await bcrypt.compare(password, admin.password);
+      if (!isMatch) {
+        return res.status(401).json({ message: 'Invalid username/email or password.' });
+      }
+
+      const token = signToken(admin._id, 'admin');
+
+      return res.json({
+        token,
+        admin: publicAdmin(admin),
+      });
     }
 
-    const isMatch = await bcrypt.compare(password, admin.password);
+    const officer = await QueueOfficer.findOne({ username: normalizedIdentifier }).select('+password');
+
+    if (!officer) {
+      return res.status(401).json({ message: 'Invalid username/email or password.' });
+    }
+
+    if (officer.accountStatus !== 'Active') {
+      return res.status(403).json({ message: 'Queue officer account is inactive.' });
+    }
+
+    const isMatch = await bcrypt.compare(password, officer.password);
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
+      return res.status(401).json({ message: 'Invalid username/email or password.' });
     }
 
-    const token = signToken(admin._id);
+    officer.isOnline = true;
+    await officer.save();
+
+    const token = signToken(officer._id, 'queue-officer');
 
     return res.json({
       token,
-      admin: publicAdmin(admin),
+      admin: publicOfficer(officer),
     });
   } catch (error) {
     console.error('Login error:', error);
     return res.status(500).json({ message: 'Failed to sign in.' });
+  }
+}
+
+// POST /api/auth/logout
+async function logout(req, res) {
+  try {
+    if (req.userType === 'queue-officer' && req.user) {
+      req.user.isOnline = false;
+      await req.user.save();
+    }
+
+    return res.json({ message: 'Signed out successfully.' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    return res.status(500).json({ message: 'Failed to sign out cleanly.' });
   }
 }
 
@@ -204,7 +262,7 @@ async function resetPassword(req, res) {
     admin.resetPasswordExpire = undefined;
     await admin.save();
 
-    const authToken = signToken(admin._id);
+    const authToken = signToken(admin._id, 'admin');
 
     return res.json({
       message: 'Password updated successfully.',
@@ -219,12 +277,17 @@ async function resetPassword(req, res) {
 
 // GET /api/auth/me  (protected)
 async function getMe(req, res) {
-  return res.json({ admin: publicAdmin(req.admin) });
+  if (req.userType === 'queue-officer') {
+    return res.json({ admin: publicOfficer(req.user) });
+  }
+
+  return res.json({ admin: publicAdmin(req.user) });
 }
 
 module.exports = {
   signup,
   login,
+  logout,
   forgotPassword,
   resetPassword,
   getMe,

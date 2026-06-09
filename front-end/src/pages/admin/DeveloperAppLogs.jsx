@@ -24,6 +24,7 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import apiClient from '../../api/client';
+import { exportToCSV, exportToExcel } from '../../utils/exportData';
 import AdminShell from './AdminShell';
 import './AdminDataTables.css';
 
@@ -33,6 +34,16 @@ const SEVERITY_COLORS = {
   Warning: 'orange',
   Critical: 'red',
 };
+
+const LOGS_EXPORT_COLS = [
+  { title: 'Timestamp', dataIndex: 'timestamp', exportValue: (v) => v ? new Date(v).toLocaleString([], { hour12: true }) : '' },
+  { title: 'Actor', dataIndex: 'actor' },
+  { title: 'Action', dataIndex: 'action' },
+  { title: 'Scope', dataIndex: 'scope' },
+  { title: 'Source', dataIndex: 'source' },
+  { title: 'Severity', dataIndex: 'severity' },
+  { title: 'Details', dataIndex: 'details' },
+];
 
 export default function DeveloperAppLogs() {
   const { message } = App.useApp();
@@ -117,14 +128,13 @@ export default function DeveloperAppLogs() {
     }
   };
 
-  const exportLogs = () => {
-    const blob = new Blob([JSON.stringify(filteredLogs, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'app-logs.json';
-    link.click();
-    URL.revokeObjectURL(url);
+  const exportLogs = (format) => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'excel') {
+      exportToExcel(LOGS_EXPORT_COLS, filteredLogs, `app-logs-${stamp}`);
+    } else {
+      exportToCSV(LOGS_EXPORT_COLS, filteredLogs, `app-logs-${stamp}`);
+    }
   };
 
   const columns = [
@@ -186,8 +196,11 @@ export default function DeveloperAppLogs() {
           <Button size="small" icon={<SearchOutlined />} onClick={() => loadLogs(search)}>
             Search
           </Button>
-          <Button size="small" icon={<DownloadOutlined />} onClick={exportLogs}>
-            Export Logs
+          <Button size="small" icon={<DownloadOutlined />} onClick={() => exportLogs('csv')}>
+            CSV
+          </Button>
+          <Button size="small" icon={<DownloadOutlined />} onClick={() => exportLogs('excel')} style={{ color: '#15803d', borderColor: '#15803d' }}>
+            Excel
           </Button>
         </Space>
       }
@@ -208,16 +221,22 @@ export default function DeveloperAppLogs() {
         <Col xs={24}>
           <Card bordered={false} className="admin-data-table-card">
             <Table
-              className="admin-data-table"
+              className="admin-data-table admin-data-table-applogs"
               columns={columns}
               dataSource={filteredLogs}
               rowKey="_id"
               loading={loading}
-              pagination={{ pageSize: 8 }}
+              pagination={{
+                defaultPageSize: 15,
+                showSizeChanger: true,
+                pageSizeOptions: ['10', '15', '25', '50', '100'],
+                showTotal: (total, range) => `${range[0]}–${range[1]} of ${total} logs`,
+              }}
               scroll={{ x: 'max-content' }}
               expandable={{
                 expandedRowRender: (record) => record.details || 'No additional details.',
               }}
+              size="small"
             />
           </Card>
         </Col>

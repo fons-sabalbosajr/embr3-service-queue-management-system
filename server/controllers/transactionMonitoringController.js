@@ -1,6 +1,32 @@
 const TransactionMonitoring = require('../models/TransactionMonitoring');
 const logEvent = require('../utils/logEvent');
 
+async function getPublicQueueSummary(_req, res) {
+  try {
+    const queueItems = await TransactionMonitoring.find(
+      { clientCallStatus: { $in: ['Queued', 'Waiting to Call', 'CALL', 'CLIENT MISSING'] } },
+      {
+        clientName: 1,
+        clientCardNo: 1,
+        clientStatus: 1,
+        screeningOfficer: 1,
+        transactionStatus: 1,
+        specificInquiry: 1,
+        eccCnc: 1,
+        clientCallStatus: 1,
+        createdAt: 1,
+      }
+    )
+      .sort({ createdAt: 1 })
+      .lean();
+
+    return res.json({ queueItems });
+  } catch (error) {
+    console.error('Get public queue summary error:', error);
+    return res.status(500).json({ message: 'Failed to load public queue summary.' });
+  }
+}
+
 async function listTransactions(_req, res) {
   const transactions = await TransactionMonitoring.find().sort({ createdAt: -1 });
   return res.json({ transactions });
@@ -81,6 +107,7 @@ async function deleteTransaction(req, res) {
 }
 
 module.exports = {
+  getPublicQueueSummary,
   listTransactions,
   createTransaction,
   updateTransaction,

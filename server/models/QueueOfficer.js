@@ -1,5 +1,13 @@
 const mongoose = require('mongoose');
 
+const DEFAULT_OFFICER_ACCESS = [
+  'dashboard',
+  'queue-dashboard',
+  'queue-officer',
+  'queue-officer-serving-desk',
+  'queue-officer-portal',
+];
+
 const queueOfficerSchema = new mongoose.Schema(
   {
     employeeId: {
@@ -22,6 +30,19 @@ const queueOfficerSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+    password: {
+      type: String,
+      required: true,
+      minlength: 8,
+      select: false,
+    },
     assignedTransaction: {
       type: String,
       required: [true, 'Assigned transaction is required'],
@@ -31,6 +52,19 @@ const queueOfficerSchema = new mongoose.Schema(
       type: String,
       enum: ['Available', 'Not Available'],
       default: 'Available',
+    },
+    accountStatus: {
+      type: String,
+      enum: ['Active', 'Inactive'],
+      default: 'Active',
+    },
+    isOnline: {
+      type: Boolean,
+      default: false,
+    },
+    accessModules: {
+      type: [String],
+      default: DEFAULT_OFFICER_ACCESS,
     },
   },
   { timestamps: true }

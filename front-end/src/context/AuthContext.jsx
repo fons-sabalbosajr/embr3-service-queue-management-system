@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import apiClient from '../api/client';
-import { secureLocal } from '../utils/secureStorage';
+import { secureLocal, secureSession } from '../utils/secureStorage';
 
 const AuthContext = createContext(null);
 
@@ -9,7 +9,10 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = secureLocal.getItem('sqms_token');
+    // Use sessionStorage so each browser tab holds its own user session.
+    // Refreshing the same tab preserves the session; opening a new tab
+    // starts fresh, preventing one user's token from leaking into another tab.
+    const token = secureSession.getItem('sqms_token');
     if (!token) {
       setLoading(false);
       return;
@@ -19,19 +22,26 @@ export function AuthProvider({ children }) {
       .get('/auth/me')
       .then((res) => setAdmin(res.data.admin))
       .catch(() => {
-        secureLocal.removeItem('sqms_token');
+        secureSession.removeItem('sqms_token');
       })
       .finally(() => setLoading(false));
   }, []);
 
   const persistSession = ({ token, admin: nextAdmin }) => {
-    secureLocal.setItem('sqms_token', token);
+    secureSession.setItem('sqms_token', token);
     setAdmin(nextAdmin);
   };
 
   const logout = () => {
-    secureLocal.removeItem('sqms_token');
-    setAdmin(null);
+    apiClient.post('/auth/logout').catch(() => {
+      // Best effort only. Local logout should still complete.
+    }).finally(() => {
+      secureSession.removeItem('sqms_token');
+      secureLocal.removeItem('sqms_token');
+      localStorage.removeItem('sqms_token');
+      sessionStorage.removeItem('sqms_token');
+      setAdmin(null);
+    });
   };
 
   const value = useMemo(

@@ -41,6 +41,28 @@ const queueDisplayConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    boardTitle: {
+      type: String,
+      default: 'Queue Dashboard',
+      trim: true,
+    },
+    boardTitleSize: {
+      type: Number,
+      default: 56,
+      min: 20,
+      max: 120,
+    },
+    boardSubtitle: {
+      type: String,
+      default: 'Now Serving',
+      trim: true,
+    },
+    boardSubtitleSize: {
+      type: Number,
+      default: 36,
+      min: 14,
+      max: 80,
+    },
     counterCards: {
       type: [queueDisplayCardSchema],
       default: [],
