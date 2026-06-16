@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react'
-import { Spin } from 'antd'
 import { Navigate, Route, Routes } from 'react-router-dom'
+import LoadingScreen from './components/LoadingScreen'
 import ProtectedRoute from './components/ProtectedRoute'
 import './App.css'
 
@@ -20,6 +20,9 @@ const QueueOfficerServingDesk = lazy(() =>
   import('./pages/admin/QueueOfficerServingDesk')
 )
 const MyQueuePortal = lazy(() => import('./pages/admin/MyQueuePortal'))
+const QueueNumberInitialization = lazy(() =>
+  import('./pages/admin/QueueNumberInitialization')
+)
 const SecretariatStartTransaction = lazy(() =>
   import('./pages/admin/SecretariatStartTransaction')
 )
@@ -32,21 +35,20 @@ const SettingsTransactionMonitoring = lazy(() =>
 const SettingsDashboardDisplay = lazy(() =>
   import('./pages/admin/SettingsDashboardDisplay')
 )
+const SettingsActivityLogMaintenance = lazy(() =>
+  import('./pages/admin/SettingsActivityLogMaintenance')
+)
+const SettingsDailyQueueReset = lazy(() =>
+  import('./pages/admin/SettingsDailyQueueReset')
+)
+const SettingsDailyQueueArchives = lazy(() =>
+  import('./pages/admin/SettingsDailyQueueArchives')
+)
 const QueueDashboard = lazy(() => import('./pages/queue/QueueDashboard'))
+const CheckMyQueue = lazy(() => import('./pages/queue/CheckMyQueue'))
 
 function RouteLoader() {
-  return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'grid',
-        placeItems: 'center',
-        background: '#f1f5f9',
-      }}
-    >
-      <Spin size="large" />
-    </div>
-  )
+  return <LoadingScreen title="Loading page" description="Fetching the route bundle, validations, and screen data." />
 }
 
 function App() {
@@ -116,6 +118,30 @@ function App() {
           }
         />
         <Route
+          path="/home/settings/activity-log-maintenance"
+          element={
+            <ProtectedRoute>
+              <SettingsActivityLogMaintenance />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/home/settings/daily-queue-reset"
+          element={
+            <ProtectedRoute>
+              <SettingsDailyQueueReset />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/home/settings/daily-queue-archives"
+          element={
+            <ProtectedRoute>
+              <SettingsDailyQueueArchives />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/home/queue-officer/serving-desk"
           element={
             <ProtectedRoute>
@@ -132,6 +158,14 @@ function App() {
           }
         />
         <Route
+          path="/home/queue-officer/queue-number-initialization"
+          element={
+            <ProtectedRoute>
+              <QueueNumberInitialization />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/home/secretariat/start-transaction"
           element={
             <ProtectedRoute>
@@ -141,11 +175,11 @@ function App() {
         />
         <Route
           path="/queue-dashboard"
-          element={
-            <ProtectedRoute>
-              <QueueDashboard />
-            </ProtectedRoute>
-          }
+          element={<QueueDashboard />}
+        />
+        <Route
+          path="/check-my-queue"
+          element={<CheckMyQueue />}
         />
 
         <Route path="*" element={<Navigate to="/admin" replace />} />

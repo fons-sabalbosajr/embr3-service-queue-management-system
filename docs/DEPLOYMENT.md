@@ -99,6 +99,11 @@ EMAIL_PASS=<email-password>
 
 # URL of the hosted frontend (used in password-reset email links)
 CLIENT_URL=https://sqms.yourdomain.com
+
+# Web Push (required for closed-page queue notifications)
+VAPID_PUBLIC_KEY=<generated-public-key>
+VAPID_PRIVATE_KEY=<generated-private-key>
+VAPID_SUBJECT=mailto:no-reply@yourdomain.com
 ```
 
 > **Port note:** Confirm `5050` is free before using it.
@@ -198,6 +203,36 @@ server {
     }
 }
 ```
+
+For background push notifications on phones after the page is closed, serve the frontend over HTTPS. A minimal production TLS block looks like this:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name sqms.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/sqms.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sqms.yourdomain.com/privkey.pem;
+
+    root /var/www/embr3-sqms/front-end/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass         http://127.0.0.1:5050;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+For local phone testing, use an HTTPS dev certificate whose subjectAltName includes the machine IP and trust that certificate on the phone before testing service worker push.
 
 Enable the site and reload Nginx:
 

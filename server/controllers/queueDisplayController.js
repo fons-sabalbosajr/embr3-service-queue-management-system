@@ -16,6 +16,27 @@ async function getQueueDisplayConfig(_req, res) {
   return res.json({ config });
 }
 
+async function getPublicQueueDisplayConfig(_req, res) {
+  try {
+    const config = await ensureConfig();
+    return res.json({
+      config: {
+        refreshSeconds: config.refreshSeconds,
+        density: config.density,
+        soundAlerts: config.soundAlerts,
+        boardTitle: config.boardTitle,
+        boardSubtitle: config.boardSubtitle,
+        boardTitleSize: config.boardTitleSize,
+        boardSubtitleSize: config.boardSubtitleSize,
+        counterCards: config.counterCards,
+      },
+    });
+  } catch (error) {
+    console.error('Get public queue display config error:', error);
+    return res.status(500).json({ message: 'Failed to load public queue display config.' });
+  }
+}
+
 async function updateQueueDisplaySettings(req, res) {
   try {
     const { refreshSeconds, density, soundAlerts, boardTitle, boardSubtitle, boardTitleSize, boardSubtitleSize } = req.body;
@@ -161,6 +182,7 @@ async function deleteQueueDisplayCard(req, res) {
 
 module.exports = {
   getQueueDisplayConfig,
+  getPublicQueueDisplayConfig,
   updateQueueDisplaySettings,
   createQueueDisplayCard,
   updateQueueDisplayCard,

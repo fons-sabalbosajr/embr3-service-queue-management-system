@@ -328,6 +328,7 @@
 }
 /* Row highlight for active call */
 .txn-row-call td { background: #f0fdf4 !important; }
+.txn-row-initialized td { background: #f8fafc !important; }
 .txn-row-missing td { background: #fef2f2 !important; }
 .txn-row-done td { background: #f0fdf4 !important; opacity: 0.75; }
 .txn-row-assisted td { background: #faf5ff !important; opacity: 0.75; }
@@ -403,3 +404,116 @@
 .admin-collapse-card > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box {
   padding: 12px 14px;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   ANIMATED ROW-ACTION ICONS
+   ═══════════════════════════════════════════════════════════ */
+
+/* Base: smooth transition so animations feel intentional on hover */
+.anim-icon-throw,
+.anim-icon-ring,
+.anim-icon-pulse,
+.anim-icon-slide,
+.anim-icon-pop,
+.anim-icon-wiggle,
+.anim-icon-shake {
+  transition: transform 0.18s ease, color 0.18s ease;
+  will-change: transform;
+}
+
+/* Throw / Send — paper-plane lift-off on hover */
+@keyframes anim-throw {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  40% { transform: translate(3px, -3px) rotate(8deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+.qno-throw-btn:hover .anim-icon-throw,
+.qno-serve-btn:hover .anim-icon-throw {
+  animation: anim-throw 0.6s ease infinite;
+}
+
+/* Ring — call/notification bell swing */
+@keyframes anim-ring {
+  0%, 100% { transform: rotate(0deg); }
+  20% { transform: rotate(14deg); }
+  40% { transform: rotate(-12deg); }
+  60% { transform: rotate(8deg); }
+  80% { transform: rotate(-6deg); }
+}
+.ant-btn:hover .anim-icon-ring,
+.anim-icon-ring:hover {
+  animation: anim-ring 0.7s ease infinite;
+  transform-origin: 50% 0;
+  color: #1d4ed8;
+}
+
+/* Pulse — hold/serve breathing */
+@keyframes anim-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.22); }
+}
+.ant-btn:hover .anim-icon-pulse,
+.anim-icon-pulse:hover {
+  animation: anim-pulse 0.9s ease-in-out infinite;
+}
+
+/* Slide — skip/forward nudges right */
+@keyframes anim-slide {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(4px); }
+}
+.ant-btn:hover .anim-icon-slide,
+.anim-icon-slide:hover {
+  animation: anim-slide 0.6s ease infinite;
+  color: #ea580c;
+}
+
+/* Pop — done/assisted bounce */
+@keyframes anim-pop {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.3); }
+  60% { transform: scale(0.92); }
+}
+.ant-btn:hover .anim-icon-pop,
+.anim-icon-pop:hover {
+  animation: anim-pop 0.7s ease infinite;
+}
+
+/* Wiggle — edit pencil tilt */
+@keyframes anim-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  30% { transform: rotate(-12deg); }
+  70% { transform: rotate(10deg); }
+}
+.ant-btn:hover .anim-icon-wiggle,
+.anim-icon-wiggle:hover {
+  animation: anim-wiggle 0.6s ease infinite;
+  color: #1d4ed8;
+}
+
+/* Shake — delete warning */
+@keyframes anim-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+.ant-btn:hover .anim-icon-shake,
+.anim-icon-shake:hover {
+  animation: anim-shake 0.4s ease infinite;
+}
+
+/* Queue Number Officer — ready (gray) number chip + serve button glow */
+@keyframes qno-ready-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(100, 116, 139, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(100, 116, 139, 0); }
+}
+.qno-ready-number {
+  animation: qno-ready-glow 2s ease-in-out infinite;
+}
+.qno-row-ready td {
+  background: #f8fafc !important;
+}
+.qno-serve-btn {
+  animation: qno-ready-glow 2.4s ease-in-out infinite;
+}
+

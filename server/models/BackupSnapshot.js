@@ -37,6 +37,51 @@ const backupSnapshotSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    archiveType: {
+      type: String,
+      default: 'database',
+      trim: true,
+    },
+    reportDate: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    archiveSummary: {
+      type: new mongoose.Schema(
+        {
+          totalTransactions: { type: Number, default: 0 },
+          completedTransactions: { type: Number, default: 0 },
+          activeTransactions: { type: Number, default: 0 },
+        },
+        { _id: false }
+      ),
+      default: () => ({}),
+    },
+    reportRows: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+    archivedTransactions: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+    resetExecutedAt: {
+      type: Date,
+      default: null,
+    },
+    resetDeletedCount: {
+      type: Number,
+      default: 0,
+    },
+    clearedAt: {
+      type: Date,
+      default: null,
+    },
+    clearedCount: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

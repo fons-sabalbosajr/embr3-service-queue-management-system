@@ -8,8 +8,8 @@ import {
   EyeOutlined,
   HeartOutlined,
   HistoryOutlined,
-  LikeOutlined,
   PauseCircleOutlined,
+  PlayCircleOutlined,
   NotificationOutlined,
   PlusOutlined,
   StepForwardOutlined,
@@ -22,11 +22,10 @@ import {
   Card,
   Col,
   DatePicker,
+  Dropdown,
   Form,
-  Grid,
   Input,
   Modal,
-  Popconfirm,
   Row,
   Select,
   Space,
@@ -39,12 +38,30 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import apiClient from '../../api/client';
+import LoadingScreen from '../../components/LoadingScreen';
 import { exportToCSV, exportToExcel } from '../../utils/exportData';
 import { useAuth } from '../../context/AuthContext';
 import AdminShell from './AdminShell';
 
 const { Text } = Typography;
 const { TextArea } = Input;
+
+async function getSwal() {
+  const mod = await import('sweetalert2')
+  return mod.default
+}
+
+async function portalToast(options) {
+  const Swal = await getSwal()
+  const toast = Swal.mixin({
+    toast: true,
+    position: 'top-end',
+    showConfirmButton: false,
+    timer: 2200,
+    timerProgressBar: true,
+  })
+  return toast.fire(options)
+}
 
 // ── Export column definitions ─────────────────────────────────────────────
 const QUEUE_EXPORT_COLS = [
@@ -82,6 +99,30 @@ const INQUIRY_OPTIONS_BY_TRANSACTION = {
     'Permit / Clearance / Certificate Issued',
   ],
   'PTO/DP/PCO': [
+    'Screening Only (Inquiry/Consultation)',
+    'Application Received',
+    'Application Processed',
+    'Permit / Clearance / Certificate Issued',
+  ],
+  'PTO/DP': [
+    'Screening Only (Inquiry/Consultation)',
+    'Application Received',
+    'Application Processed',
+    'Permit / Clearance / Certificate Issued',
+  ],
+  PCO: [
+    'Screening Only (Inquiry/Consultation)',
+    'Application Received',
+    'Application Processed',
+    'Permit / Clearance / Certificate Issued',
+  ],
+  HAZ: [
+    'Screening Only (Inquiry/Consultation)',
+    'Application Received',
+    'Application Processed',
+    'Permit / Clearance / Certificate Issued',
+  ],
+  'OTHER PERMITS': [
     'Screening Only (Inquiry/Consultation)',
     'Application Received',
     'Application Processed',
@@ -139,6 +180,11 @@ function getCompletionRequirement(entry) {
   if (!entry) return null;
   const grp = normalizeTransactionGroup(entry.eccCnc);
   const inquiry = String(entry.transactionStatus || '');
+
+  // Inquiry / Consultation transactions never require payment-receipt data.
+  if (/inquiry|consultation|screening only/i.test(inquiry)) {
+    return null;
+  }
 
   if (grp === 'ECC/CNC' || grp === 'PTO/DP/PCO' || grp === 'HWG ID') {
     return COMPLETION_TRIGGER_INQUIRY_STATUSES.includes(inquiry) ? 'paymentDateTime' : null;
@@ -212,8 +258,8 @@ function playButtonTone(enabled) {
   osc.onended = () => ctx.close().catch(() => {});
 }
 
-// Corporate ding-dong bell: two descending tones, then voice-over
-function playCorporateBellAndSpeak(text, enabled) {
+// Corporate ding-dong bell for admin-side queue calls.
+function playCorporateBell(enabled) {
   if (!enabled || typeof window === 'undefined') return;
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return;
@@ -246,29 +292,8 @@ function playCorporateBellAndSpeak(text, enabled) {
   playNote(880, t, 0.55, 0.18);       // ding  (A5)
   playNote(698.5, t + 0.32, 0.65, 0.14); // dong (F5)
 
-  const bellDuration = 0.32 + 0.65 + 0.15; // ~1.12 s before speech starts
-
-  if (window.speechSynthesis && text) {
-    setTimeout(() => {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.88;
-      utterance.pitch = 1;
-      window.speechSynthesis.speak(utterance);
-    }, bellDuration * 1000);
-  }
-
-  // Close context after bell + expected speech time (~8 s max)
-  setTimeout(() => ctx.close().catch(() => {}), (bellDuration + 8) * 1000);
-}
-
-function speakQueueCall(text, enabled) {
-  if (!enabled || typeof window === 'undefined' || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.9;
-  utterance.pitch = 1;
-  window.speechSynthesis.speak(utterance);
+  const bellDuration = 0.32 + 0.65 + 0.15;
+  setTimeout(() => ctx.close().catch(() => {}), bellDuration * 1000);
 }
 
 function statusColor(status) {
@@ -281,6 +306,14 @@ function statusColor(status) {
       return 'gold';
     case 'Skipped':
       return 'volcano';
+    case 'CLIENT MISSING':
+      return 'red';
+    case 'Initialized':
+      return 'default';
+    case 'Done':
+    case 'Assisted':
+    case 'Done/Assisted':
+      return 'green';
     default:
       return 'orange';
   }
@@ -289,17 +322,17 @@ function statusColor(status) {
 export default function MyQueuePortal() {
   const { message } = App.useApp();
   const { admin } = useAuth();
-  const screens = Grid.useBreakpoint();
-  const isSmall = !screens.md;  // tablet/mobile: hide button text labels
   const [form] = Form.useForm();
   const [historyForm] = Form.useForm();
   const [completionForm] = Form.useForm();
   const [entries, setEntries] = useState([]);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySaving, setHistorySaving] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [editingHistoryId, setEditingHistoryId] = useState(null);
   const [activeTab, setActiveTab] = useState('queue');
+  const [historyTab, setHistoryTab] = useState('all');
   const [displayOptions, setDisplayOptions] = useState([]);
   const [officers, setOfficers] = useState([]);
   const [selectedOfficerId, setSelectedOfficerId] = useState(null);
@@ -315,6 +348,7 @@ export default function MyQueuePortal() {
   const [formExpanded, setFormExpanded] = useState(true);
   const [completionModalOpen, setCompletionModalOpen] = useState(false);
   const [completionPendingStatus, setCompletionPendingStatus] = useState(null);
+  const [completionSaving, setCompletionSaving] = useState(false);
   const [viewHistoryRecord, setViewHistoryRecord] = useState(null);
   const selectedGeneralInquiry = Form.useWatch('generalInquiry', form);
   const selectedClientStatus = Form.useWatch('clientStatus', form);
@@ -394,6 +428,22 @@ export default function MyQueuePortal() {
   useEffect(() => {
     loadEntries();
   }, [selectedOfficerId]);
+
+  // Realtime refresh: silently re-fetch active queue entries so thrown numbers
+  // and status changes from other officers/pages appear without manual reloads.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await apiClient.get('/queue-officers/portal/entries', {
+          params: isAdminDeveloper && selectedOfficerId ? { officerId: selectedOfficerId } : undefined,
+        });
+        setEntries(res.data.entries || []);
+      } catch {
+        // Ignore transient polling errors.
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isAdminDeveloper, selectedOfficerId]);
 
   // ── Transaction history (Done / Assisted) ──────────────────────
   const loadHistory = async () => {
@@ -481,14 +531,14 @@ export default function MyQueuePortal() {
 
   useEffect(() => {
     const currentValue = String(form.getFieldValue('clientCardNo') || '').trim();
-    const shouldSyncSuggestedNumber = !isAdminDeveloper || !currentValue || currentValue === lastSuggestedQueueNumberRef.current;
+    const shouldSyncSuggestedNumber = !editingEntryId && (!isAdminDeveloper || !currentValue || currentValue === lastSuggestedQueueNumberRef.current);
 
     if (shouldSyncSuggestedNumber) {
       form.setFieldsValue({ clientCardNo: nextQueueNumber });
     }
 
     lastSuggestedQueueNumberRef.current = nextQueueNumber;
-  }, [form, isAdminDeveloper, nextQueueNumber]);
+  }, [editingEntryId, form, isAdminDeveloper, nextQueueNumber]);
 
   useEffect(() => {
     if (!inquiryOptions.length) {
@@ -513,10 +563,10 @@ export default function MyQueuePortal() {
 
       if (editingEntryId) {
         await apiClient.put(`/queue-officers/portal/entries/${editingEntryId}`, payload);
-        message.success('Queue entry updated successfully.');
+        await portalToast({ icon: 'success', title: 'Queue entry updated.' });
       } else {
         await apiClient.post('/queue-officers/portal/entries', payload);
-        message.success('Client queued successfully.');
+        await portalToast({ icon: 'success', title: 'Client queued successfully.' });
       }
       form.resetFields();
       form.setFieldsValue({
@@ -528,57 +578,9 @@ export default function MyQueuePortal() {
       setSelectedEntryId(null);
       loadEntries();
     } catch (error) {
-      message.error(error.response?.data?.message || 'Unable to queue client.');
+      await Swal.fire({ icon: 'error', title: 'Unable to queue client', text: error.response?.data?.message || 'Please try again.' });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleCallNumber = async () => {
-    if (!selectedEntry) {
-      message.warning('Select a queue entry first.');
-      return;
-    }
-
-    setActingId(selectedEntry._id);
-    try {
-      playCorporateBellAndSpeak(
-        `Now serving number ${formatQueueNumber(selectedEntry.clientCardNo)} for ${selectedEntry.eccCnc}. Please proceed to the counter.`,
-        soundEnabled
-      );
-      await apiClient.post(`/queue-officers/portal/entries/${selectedEntry._id}/call`, {
-        officerId: isAdminDeveloper ? selectedOfficerId : undefined,
-      });
-      message.success(`Now calling ${formatQueueNumber(selectedEntry.clientCardNo)}.`);
-      setSelectedEntryId(null);
-      loadEntries();
-    } catch (error) {
-      message.error(error.response?.data?.message || 'Unable to call queue number.');
-    } finally {
-      setActingId(null);
-    }
-  };
-
-  const handleStatusUpdate = async (clientCallStatus) => {
-    if (!selectedEntry) {
-      message.warning('Select a queue entry first.');
-      return;
-    }
-
-    setActingId(selectedEntry._id);
-    try {
-      playButtonTone(soundEnabled);
-      await apiClient.patch(`/queue-officers/portal/entries/${selectedEntry._id}/status`, {
-        clientCallStatus,
-        officerId: isAdminDeveloper ? selectedOfficerId : undefined,
-      });
-      message.success(`${selectedEntry.clientCardNo} marked as ${clientCallStatus}.`);
-      setSelectedEntryId(null);
-      loadEntries();
-    } catch (error) {
-      message.error(error.response?.data?.message || 'Unable to update queue status.');
-    } finally {
-      setActingId(null);
     }
   };
 
@@ -609,21 +611,129 @@ export default function MyQueuePortal() {
       generalInquiry: selectedGeneralInquiry,
       clientCallStatus: 'Waiting to Call',
     });
+    lastSuggestedQueueNumberRef.current = nextQueueNumber;
   };
 
   // ── Done / Assisted with optional completion-data modal ──────────────────
-  const handleDoneOrAssisted = (status) => {
-    if (!selectedEntry) {
+  const handleCallNumber = async (record) => {
+    const target = record || selectedEntry;
+    if (!target?._id) {
       message.warning('Select a queue entry first.');
       return;
     }
-    const requirement = getCompletionRequirement(selectedEntry);
+
+    const Swal = await getSwal()
+    const confirmed = await Swal.fire({
+      title: `Call queue no. ${formatQueueNumber(target.clientCardNo)}?`,
+      text: 'This will push the active call to the public dashboard.',
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Call now',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#1d4ed8',
+    });
+    if (!confirmed.isConfirmed) return;
+
+    setActingId(target._id);
+    try {
+      playCorporateBell(soundEnabled);
+      await apiClient.post(`/queue-officers/portal/entries/${target._id}/call`, {
+        officerId: isAdminDeveloper ? selectedOfficerId : undefined,
+      });
+      await portalToast({ icon: 'success', title: `Now calling ${formatQueueNumber(target.clientCardNo)}.` });
+      setSelectedEntryId(null);
+      loadEntries();
+    } catch (error) {
+      await Swal.fire({ icon: 'error', title: 'Unable to call queue number', text: error.response?.data?.message || 'Please try again.' });
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleStatusUpdate = async (clientCallStatus, record) => {
+    const target = record || selectedEntry;
+    if (!target?._id) {
+      message.warning('Select a queue entry first.');
+      return;
+    }
+
+    const Swal = await getSwal()
+    const confirmed = await Swal.fire({
+      title: `Set ${formatQueueNumber(target.clientCardNo)} to ${clientCallStatus}?`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Confirm',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#1d4ed8',
+    });
+    if (!confirmed.isConfirmed) return;
+
+    setActingId(target._id);
+    try {
+      playButtonTone(soundEnabled);
+      await apiClient.patch(`/queue-officers/portal/entries/${target._id}/status`, {
+        clientCallStatus,
+        officerId: isAdminDeveloper ? selectedOfficerId : undefined,
+      });
+      await portalToast({ icon: 'success', title: `${formatQueueNumber(target.clientCardNo)} marked as ${clientCallStatus}.` });
+      setSelectedEntryId(null);
+      loadEntries();
+    } catch (error) {
+      await Swal.fire({ icon: 'error', title: 'Unable to update queue status', text: error.response?.data?.message || 'Please try again.' });
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // Serve a thrown ready number (or edit an existing entry): prefill and expand the form.
+  const handleServe = (record) => {
+    if (!record) return;
+    setFormExpanded(true);
+    const queueNo = formatQueueNumber(record.clientCardNo);
+    lastSuggestedQueueNumberRef.current = queueNo;
+    form.setFieldsValue({
+      clientName: record.clientName || '',
+      clientCardNo: queueNo,
+      generalInquiry: record.eccCnc,
+      clientStatus: record.clientStatus || 'Regular',
+      inquiry: record.transactionStatus || undefined,
+      specificInquiry: record.specificInquiry || undefined,
+      companyOrApplicationNo: record.companyOrApplicationNo || '',
+      clientCallStatus: record.clientCallStatus === 'Initialized' ? 'Waiting to Call' : record.clientCallStatus,
+    });
+    setEditingEntryId(record._id);
+    setSelectedEntryId(record._id);
+  };
+
+  // Inline-edit the Inquiry value directly from the queue list.
+  const handleInlineInquiryChange = async (record, value) => {
+    try {
+      await apiClient.put(`/queue-officers/portal/entries/${record._id}`, {
+        inquiry: value,
+        officerId: isAdminDeveloper ? selectedOfficerId : undefined,
+      });
+      await portalToast({ icon: 'success', title: 'Inquiry updated.' });
+      loadEntries();
+    } catch (error) {
+      await Swal.fire({ icon: 'error', title: 'Unable to update inquiry', text: error.response?.data?.message || 'Please try again.' });
+    }
+  };
+
+  // ── Done / Assisted with optional completion-data modal ──────────────────
+  const handleDoneOrAssisted = (status, record) => {
+    const target = record || selectedEntry;
+    if (!target) {
+      message.warning('Select a queue entry first.');
+      return;
+    }
+    setSelectedEntryId(target._id);
+    const requirement = getCompletionRequirement(target);
     if (requirement) {
       completionForm.resetFields();
       setCompletionPendingStatus(status);
       setCompletionModalOpen(true);
     } else {
-      handleStatusUpdate(status);
+      handleStatusUpdate(status, target);
     }
   };
 
@@ -642,7 +752,7 @@ export default function MyQueuePortal() {
       extraPayload.companyOrApplicationNo = values.companyRegId;
     }
 
-    setCompletionModalOpen(false);
+    setCompletionSaving(true);
     setActingId(selectedEntry._id);
     try {
       playButtonTone(soundEnabled);
@@ -651,30 +761,67 @@ export default function MyQueuePortal() {
         officerId: isAdminDeveloper ? selectedOfficerId : undefined,
         ...extraPayload,
       });
-      message.success(`${selectedEntry.clientCardNo} marked as ${completionPendingStatus}.`);
+      await portalToast({ icon: 'success', title: `${formatQueueNumber(selectedEntry.clientCardNo)} marked as ${completionPendingStatus}.` });
+      setCompletionModalOpen(false);
       setSelectedEntryId(null);
       loadEntries();
     } catch (error) {
-      message.error(error.response?.data?.message || 'Unable to update queue status.');
+      await Swal.fire({ icon: 'error', title: 'Unable to update queue status', text: error.response?.data?.message || 'Please try again.' });
     } finally {
+      setCompletionSaving(false);
       setActingId(null);
     }
   };
 
   const handleDeleteEntry = async (record) => {
+    const Swal = await getSwal()
+    const confirmed = await Swal.fire({
+      title: `Delete queue entry ${formatQueueNumber(record.clientCardNo)}?`,
+      text: 'This permanently removes the queue entry.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#dc2626',
+    });
+    if (!confirmed.isConfirmed) return;
+
     try {
       await apiClient.delete(`/queue-officers/portal/entries/${record._id}`, {
         params: { officerId: selectedOfficerId },
       });
-      message.success(`Entry ${formatQueueNumber(record.clientCardNo)} deleted.`);
+      await portalToast({ icon: 'success', title: `Entry ${formatQueueNumber(record.clientCardNo)} deleted.` });
       if (selectedEntryId === record._id) {
         setSelectedEntryId(null);
       }
       loadEntries();
     } catch (error) {
-      message.error(error.response?.data?.message || 'Unable to delete entry.');
+      await Swal.fire({ icon: 'error', title: 'Unable to delete entry', text: error.response?.data?.message || 'Please try again.' });
     }
   };
+
+  const historyTabs = useMemo(() => {
+    const values = Array.from(new Set([
+      ...displayOptions,
+      ...history.map((item) => item.eccCnc).filter(Boolean),
+    ])).filter(Boolean);
+
+    return [
+      { key: 'all', label: 'All Permits' },
+      ...values.map((value) => ({ key: value, label: value })),
+    ];
+  }, [displayOptions, history]);
+
+  useEffect(() => {
+    if (!historyTabs.some((item) => item.key === historyTab)) {
+      setHistoryTab(historyTabs[0]?.key || 'all');
+    }
+  }, [historyTab, historyTabs]);
+
+  const filteredHistory = useMemo(
+    () => (historyTab === 'all' ? history : history.filter((item) => item.eccCnc === historyTab)),
+    [history, historyTab]
+  );
 
   const columns = [
     {
@@ -711,7 +858,26 @@ export default function MyQueuePortal() {
       title: 'Inquiry',
       dataIndex: 'transactionStatus',
       key: 'transactionStatus',
-      render: (value) => <Tag color="purple">{value}</Tag>,
+      width: 230,
+      render: (value, record) => {
+        if (record.clientCallStatus === 'Initialized') {
+          return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
+        }
+        const grp = normalizeTransactionGroup(record.eccCnc);
+        const opts = (INQUIRY_OPTIONS_BY_TRANSACTION[grp] || ['Screening Only (Inquiry/Consultation)'])
+          .map((v) => ({ value: v, label: v }));
+        return (
+          <Select
+            size="small"
+            value={value || undefined}
+            placeholder="Set inquiry"
+            style={{ minWidth: 210 }}
+            options={opts}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(val) => handleInlineInquiryChange(record, val)}
+          />
+        );
+      },
     },
     {
       title: 'Client Type',
@@ -731,9 +897,56 @@ export default function MyQueuePortal() {
       title: 'Queue Status',
       dataIndex: 'clientCallStatus',
       key: 'clientCallStatus',
-      render: (value) => (
-        <Tag color={statusColor(value)}>{value}</Tag>
-      ),
+      render: (value) =>
+        value === 'Initialized'
+          ? <Tag color="default" style={{ color: '#64748b' }}>Ready (Unserved)</Tag>
+          : <Tag color={statusColor(value)}>{value}</Tag>,
+    },
+    {
+      title: 'Actions',
+      key: 'rowActions',
+      fixed: 'right',
+      width: 240,
+      render: (_, record) => {
+        if (record.clientCallStatus === 'Initialized') {
+          return (
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [{ key: 'serve', icon: <PlayCircleOutlined />, label: 'Serve' }],
+                onClick: ({ key, domEvent }) => {
+                  domEvent.stopPropagation();
+                  if (key === 'serve') handleServe(record);
+                },
+              }}
+            >
+              <Button type="primary" size="small" className="qno-serve-btn" onClick={(event) => event.stopPropagation()}>
+                <PlayCircleOutlined className="anim-icon-pulse" /> Serve <DownOutlined />
+              </Button>
+            </Dropdown>
+          );
+        }
+        const acting = actingId === record._id;
+        return (
+          <Space size={2}>
+            <Tooltip title="Call">
+              <Button size="small" type="text" loading={acting} icon={<NotificationOutlined className="anim-icon-ring" />} onClick={(event) => { event.stopPropagation(); handleCallNumber(record); }} />
+            </Tooltip>
+            <Tooltip title="Hold">
+              <Button size="small" type="text" icon={<PauseCircleOutlined className="anim-icon-pulse" />} onClick={(event) => { event.stopPropagation(); handleStatusUpdate('On Hold', record); }} />
+            </Tooltip>
+            <Tooltip title="Skip">
+              <Button size="small" type="text" danger icon={<StepForwardOutlined className="anim-icon-slide" />} onClick={(event) => { event.stopPropagation(); handleStatusUpdate('Skipped', record); }} />
+            </Tooltip>
+            <Tooltip title="Done/Assisted">
+              <Button size="small" type="text" style={{ color: '#15803d' }} icon={<CheckCircleOutlined className="anim-icon-pop" />} onClick={(event) => { event.stopPropagation(); handleDoneOrAssisted('Done/Assisted', record); }} />
+            </Tooltip>
+            <Tooltip title="Edit">
+              <Button size="small" type="text" icon={<EditOutlined className="anim-icon-wiggle" />} onClick={(event) => { event.stopPropagation(); handleServe(record); }} />
+            </Tooltip>
+          </Space>
+        );
+      },
     },
     ...(isAdminDeveloper ? [{
       title: '',
@@ -741,15 +954,7 @@ export default function MyQueuePortal() {
       fixed: 'right',
       width: 100,
       render: (_, record) => (
-        <Popconfirm
-          title="Delete this entry?"
-          description="Permanently removes this queue entry."
-          onConfirm={() => handleDeleteEntry(record)}
-          okText="Delete"
-          okButtonProps={{ danger: true }}
-        >
-          <Button size="small" danger icon={<DeleteOutlined />}>Delete</Button>
-        </Popconfirm>
+        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteEntry(record)}>Delete</Button>
       ),
     }] : []),
   ];
@@ -796,13 +1001,12 @@ export default function MyQueuePortal() {
         </div>
       )}
 
-      {/* Stat tiles: admin/developer only (queue officers already have the banner) */}
       {isAdminDeveloper && (
-        <div className="admin-data-stat-grid" style={{ marginBottom: 16 }}>
-          <Card bordered={false} className="admin-data-stat-card"><Statistic title="Queued Clients" value={stats.total} prefix={<PlusOutlined />} /></Card>
-          <Card bordered={false} className="admin-data-stat-card"><Statistic title="Waiting to Call" value={stats.queued} prefix={<ClockCircleOutlined />} /></Card>
-          <Card bordered={false} className="admin-data-stat-card"><Statistic title="Now Serving" value={stats.nowServing} prefix={<CheckCircleOutlined />} /></Card>
-        </div>
+        <Space wrap size={[8, 8]} style={{ marginBottom: 16 }}>
+          <Tag color="blue">Queued {stats.total}</Tag>
+          <Tag color="gold">Waiting {stats.queued}</Tag>
+          <Tag color="green">Now Serving {stats.nowServing}</Tag>
+        </Space>
       )}
 
       <Tabs
@@ -821,33 +1025,29 @@ export default function MyQueuePortal() {
             title={
               <Space size={8}>
                 {editingEntryId ? 'Edit Queue Entry' : 'Queue Client Form'}
-                {isSmall && (
-                  <Tag
-                    color={formExpanded ? 'blue' : 'default'}
-                    style={{ cursor: 'pointer', fontWeight: 600, fontSize: 11, letterSpacing: 1 }}
-                    onClick={() => setFormExpanded((v) => !v)}
-                  >
-                    {formExpanded ? 'Hide' : 'Show'}
-                  </Tag>
-                )}
+                <Tag
+                  color={formExpanded ? 'blue' : 'default'}
+                  style={{ cursor: 'pointer', fontWeight: 600, fontSize: 11, letterSpacing: 1 }}
+                  onClick={() => setFormExpanded((v) => !v)}
+                >
+                  {formExpanded ? 'Hide' : 'Show'}
+                </Tag>
               </Space>
             }
             extra={
               <Space size={8}>
                 {editingEntryId && <Button size="small" onClick={handleCancelEdit}>Cancel Edit</Button>}
-                {isSmall && (
-                  <Button
-                    size="small"
-                    icon={formExpanded ? <UpOutlined /> : <DownOutlined />}
-                    onClick={() => setFormExpanded((v) => !v)}
-                  >
-                    {formExpanded ? 'Collapse Form' : 'Expand Form'}
-                  </Button>
-                )}
+                <Button
+                  size="small"
+                  icon={formExpanded ? <UpOutlined /> : <DownOutlined />}
+                  onClick={() => setFormExpanded((v) => !v)}
+                >
+                  {formExpanded ? 'Collapse Form' : 'Expand Form'}
+                </Button>
               </Space>
             }
           >
-            {(!isSmall || formExpanded) && (
+            {formExpanded && (
             <Form
               form={form}
               layout="vertical"
@@ -858,10 +1058,10 @@ export default function MyQueuePortal() {
                 <Col xs={24} md={8}>
                   <Form.Item
                     name="clientName"
-                    label="Client Name"
-                    rules={[{ required: true, message: 'Please enter the client name.' }]}
+                    label="Client / Company Name"
+                    rules={[{ required: true, message: 'Please enter the client or company name.' }]}
                   >
-                    <Input placeholder="Juan Dela Cruz" />
+                    <TextArea autoSize={{ minRows: 1, maxRows: 3 }} placeholder="Client name or company name" />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={4}>
@@ -935,13 +1135,11 @@ export default function MyQueuePortal() {
                     <Select
                       options={[
                         { value: 'Waiting to Call', label: 'Waiting to Call' },
-                        { value: 'Queued', label: 'Queued' },
-                        { value: 'CALL', label: 'CALL' },
-                        { value: 'On Hold', label: 'On Hold' },
-                        { value: 'Skipped', label: 'Skipped' },
+                        { value: 'CALL', label: 'Call' },
+                        { value: 'On Hold', label: 'Hold' },
+                        { value: 'Skipped', label: 'Skip' },
                         { value: 'CLIENT MISSING', label: 'Client Missing' },
-                        { value: 'Done', label: 'Done' },
-                        { value: 'Assisted', label: 'Assisted' },
+                        { value: 'Done/Assisted', label: 'Done/Assisted' },
                       ]}
                     />
                   </Form.Item>
@@ -966,90 +1164,6 @@ export default function MyQueuePortal() {
             bordered={false}
             className="admin-data-table-card"
             title="Queue List"
-            extra={
-              <Space wrap>
-                {isAdminDeveloper ? (
-                  <Tooltip title="Edit Selected">
-                    <Button disabled={!selectedEntry} onClick={handleEditSelected} icon={<EditOutlined />}>
-                      <span className="btn-label">Edit Selected</span>
-                    </Button>
-                  </Tooltip>
-                ) : null}
-                <Tooltip title="Export to CSV">
-                  <Button
-                    size="small"
-                    icon={<DownloadOutlined />}
-                    onClick={() => exportToCSV(QUEUE_EXPORT_COLS, filteredEntries, `queue-${new Date().toISOString().slice(0,10)}`)}
-                  >
-                    <span className="btn-label">CSV</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Call Number">
-                  <Button
-                    type="primary"
-                    icon={<NotificationOutlined />}
-                    disabled={!selectedEntry || selectedEntry.clientCallStatus === 'CALL'}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={handleCallNumber}
-                  >
-                    <span className="btn-label">Call Number</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Waiting to Call">
-                  <Button
-                    icon={<ClockCircleOutlined />}
-                    disabled={!selectedEntry}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={() => handleStatusUpdate('Waiting to Call')}
-                  >
-                    <span className="btn-label">Waiting to Call</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Hold Queue">
-                  <Button
-                    icon={<PauseCircleOutlined />}
-                    disabled={!selectedEntry}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={() => handleStatusUpdate('On Hold')}
-                  >
-                    <span className="btn-label">Hold Queue</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Skip Queue Number">
-                  <Button
-                    danger
-                    icon={<StepForwardOutlined />}
-                    disabled={!selectedEntry}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={() => handleStatusUpdate('Skipped')}
-                  >
-                    <span className="btn-label">Skip</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Mark as Done">
-                  <Button
-                    icon={<CheckCircleOutlined />}
-                    disabled={!selectedEntry}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={() => handleDoneOrAssisted('Done')}
-                    style={{ borderColor: '#15803d', color: '#15803d' }}
-                  >
-                    <span className="btn-label">Done</span>
-                  </Button>
-                </Tooltip>
-                <Tooltip title="Mark as Assisted">
-                  <Button
-                    icon={<LikeOutlined />}
-                    disabled={!selectedEntry}
-                    loading={actingId === selectedEntry?._id}
-                    onClick={() => handleDoneOrAssisted('Assisted')}
-                    style={{ borderColor: '#7c3aed', color: '#7c3aed' }}
-                  >
-                    <span className="btn-label">Assisted</span>
-                  </Button>
-                </Tooltip>
-              </Space>
-            }
           >
             <Space wrap size={[8, 8]} style={{ marginBottom: 12 }}>
               <Select
@@ -1173,17 +1287,26 @@ export default function MyQueuePortal() {
                   </Space>
                 }
               >
+                <Tabs
+                  activeKey={historyTab}
+                  onChange={setHistoryTab}
+                  items={historyTabs.map((item) => ({ key: item.key, label: item.label }))}
+                  style={{ marginBottom: 12 }}
+                />
                 <Table
                   className="admin-data-table"
                   rowKey="_id"
                   loading={historyLoading}
-                  dataSource={history}
+                  dataSource={filteredHistory}
                   pagination={{ defaultPageSize: 8, showSizeChanger: true, pageSizeOptions: ['8','15','30'], showTotal: (t, r) => `${r[0]}–${r[1]} of ${t}` }}
                   scroll={{ x: 'max-content' }}
                   size="small"
+                  onRow={(record) => ({
+                    onClick: () => setViewHistoryRecord(record),
+                  })}
                   columns={[
                     {
-                      title: 'Client',
+                      title: 'Queue No. and Type',
                       key: 'client',
                       width: 180,
                       render: (_, rec) => (
@@ -1207,6 +1330,12 @@ export default function MyQueuePortal() {
                       ),
                     },
                     {
+                      title: 'Client/Company Name',
+                      key: 'clientName',
+                      width: 190,
+                      render: (_, rec) => <Text style={{ fontSize: 12, fontWeight: 600 }}>{rec.clientName || rec.companyOrApplicationNo || '—'}</Text>,
+                    },
+                    {
                       title: 'Counter & Inquiry',
                       key: 'inquiry',
                       width: 210,
@@ -1222,25 +1351,18 @@ export default function MyQueuePortal() {
                       ),
                     },
                     {
-                      title: 'Company / Officer',
+                      title: 'Queue Officer in Charge',
                       key: 'details',
                       width: 160,
-                      render: (_, rec) => (
-                        <div>
-                          <Text style={{ fontSize: 11 }}>{rec.companyOrApplicationNo || '—'}</Text>
-                          {rec.screeningOfficer ? (
-                            <><br /><Text type="secondary" style={{ fontSize: 10 }}>Officer: {rec.screeningOfficer}</Text></>
-                          ) : null}
-                        </div>
-                      ),
+                      render: (_, rec) => <Text style={{ fontSize: 11 }}>{rec.screeningOfficer || '—'}</Text>,
                     },
                     {
-                      title: 'Receipt / Date',
+                      title: 'Transaction Date',
                       key: 'receipt',
                       width: 115,
                       render: (_, rec) => (
                         <div>
-                          <Text style={{ fontSize: 11 }}>{rec.receiptDate || '—'}</Text>
+                          <Text style={{ fontSize: 11 }}>{rec.receiptDate || (rec.createdAt ? new Date(rec.createdAt).toLocaleDateString() : '—')}</Text>
                           {rec.receiptTime ? (
                             <><br /><Text type="secondary" style={{ fontSize: 10 }}>{rec.receiptTime}</Text></>
                           ) : null}
@@ -1248,23 +1370,11 @@ export default function MyQueuePortal() {
                       ),
                     },
                     {
-                      title: 'Status',
+                      title: 'Service Status',
                       dataIndex: 'clientCallStatus',
                       key: 'clientCallStatus',
                       width: 90,
-                      render: (v) => <Tag color={v === 'Done' ? 'green' : v === 'Assisted' ? 'purple' : 'geekblue'} style={{ fontSize: 10 }}>{v}</Tag>,
-                    },
-                    {
-                      title: '', key: 'actions', width: 100, fixed: 'right',
-                      render: (_, record) => (
-                        <Space size={4}>
-                          <Tooltip title="View Details"><Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setViewHistoryRecord(record)} /></Tooltip>
-                          <Tooltip title="Edit"><Button size="small" type="text" icon={<EditOutlined />} onClick={() => { setEditingHistoryId(record._id); historyForm.setFieldsValue({ clientName: record.clientName, clientStatus: record.clientStatus, generalInquiry: record.eccCnc, inquiry: record.transactionStatus, specificInquiry: record.specificInquiry, companyOrApplicationNo: record.companyOrApplicationNo, clientCallStatus: record.clientCallStatus }); setHistoryModalOpen(true); }} /></Tooltip>
-                          <Popconfirm title="Delete this record?" onConfirm={async () => { try { await apiClient.delete(`/queue-officers/portal/entries/${record._id}`, { params: { officerId: selectedOfficerId } }); message.success('Record deleted.'); loadHistory(); } catch { message.error('Unable to delete record.'); } }}>
-                            <Tooltip title="Delete"><Button size="small" type="text" danger icon={<DeleteOutlined />} /></Tooltip>
-                          </Popconfirm>
-                        </Space>
-                      ),
+                      render: (v) => <Tag color={statusColor(v)} style={{ fontSize: 10 }}>{v}</Tag>,
                     },
                   ]}
                 />
@@ -1278,11 +1388,18 @@ export default function MyQueuePortal() {
       <Modal
         title={editingHistoryId ? 'Edit Transaction Record' : 'Add Transaction Record'}
         open={historyModalOpen}
-        onCancel={() => setHistoryModalOpen(false)}
+        onCancel={() => !historySaving && setHistoryModalOpen(false)}
         onOk={() => historyForm.submit()}
+        confirmLoading={historySaving}
+        closable={!historySaving}
+        maskClosable={!historySaving}
         width={600}
       >
+        {historySaving ? (
+          <LoadingScreen compact title="Saving transaction record" description="Validating fields and updating queue history." />
+        ) : (
         <Form form={historyForm} layout="vertical" onFinish={async (values) => {
+          setHistorySaving(true)
           try {
             const payload = { ...values, officerId: isAdminDeveloper ? selectedOfficerId : undefined };
             if (editingHistoryId) {
@@ -1297,6 +1414,8 @@ export default function MyQueuePortal() {
             loadHistory();
           } catch (err) {
             message.error(err.response?.data?.message || 'Unable to save record.');
+          } finally {
+            setHistorySaving(false)
           }
         }}>
           <Row gutter={12}>
@@ -1312,6 +1431,7 @@ export default function MyQueuePortal() {
             <Col span={12}><Form.Item name="clientCallStatus" label="Status" rules={[{ required: true }]}><Select options={[{ value: 'Done', label: 'Done' }, { value: 'Assisted', label: 'Assisted' }]} /></Form.Item></Col>
           </Row>
         </Form>
+        )}
       </Modal>
 
       {/* ── Transaction Completion Data Modal ─────────────────── */}
@@ -1343,13 +1463,20 @@ export default function MyQueuePortal() {
               </Space>
             }
             open={completionModalOpen}
-            onCancel={() => setCompletionModalOpen(false)}
+            onCancel={() => !completionSaving && setCompletionModalOpen(false)}
             onOk={() => completionForm.submit()}
             okText={`Confirm & Mark ${completionPendingStatus || ''}`}
             okButtonProps={{ style: { background: '#15803d', borderColor: '#15803d' } }}
+            confirmLoading={completionSaving}
+            closable={!completionSaving}
+            maskClosable={!completionSaving}
             width={460}
             destroyOnClose
           >
+            {completionSaving ? (
+              <LoadingScreen compact title="Completing transaction" description="Applying validation rules and updating the final service status." />
+            ) : (
+            <>
             <div style={{
               background: 'linear-gradient(135deg,#f0fdf4 0%,#eff6ff 100%)',
               border: '1px solid #bbf7d0',
@@ -1380,9 +1507,8 @@ export default function MyQueuePortal() {
               {req === 'paymentDateTime' && (
                 <Form.Item
                   name="paymentDateTime"
-                  label="Date and Time of Payment Receipt"
-                  rules={[{ required: true, message: 'Payment date and time is required.' }]}
-                  extra="Select the exact date and time stamped on the payment receipt."
+                  label="Date and Time of Payment Receipt (optional)"
+                  extra="Optional — select the date and time stamped on the payment receipt, if available."
                 >
                   <DatePicker
                     showTime={{ format: 'hh:mm A', use12Hours: true }}
@@ -1395,9 +1521,8 @@ export default function MyQueuePortal() {
               {req === 'paymentDate' && (
                 <Form.Item
                   name="paymentDate"
-                  label="Date of Payment Receipt"
-                  rules={[{ required: true, message: 'Payment receipt date is required.' }]}
-                  extra="Enter the date printed on the official payment receipt."
+                  label="Date of Payment Receipt (optional)"
+                  extra="Optional — enter the date printed on the official payment receipt, if available."
                 >
                   <DatePicker
                     format="MM/DD/YYYY"
@@ -1409,8 +1534,7 @@ export default function MyQueuePortal() {
               {req === 'reportDate' && (
                 <Form.Item
                   name="reportDate"
-                  label="Date of Report Submission"
-                  rules={[{ required: true, message: 'Report submission date is required.' }]}
+                  label="Date of Report Submission (optional)"
                   extra={
                     <span>
                       {isSMR && !isCMR && 'SMR — submitted quarterly (every 3 months).'}
@@ -1429,14 +1553,15 @@ export default function MyQueuePortal() {
               {req === 'companyRegId' && (
                 <Form.Item
                   name="companyRegId"
-                  label="Company Registration ID"
-                  rules={[{ required: true, message: 'Company Registration ID is required.' }]}
-                  extra="Enter the official Company Registration ID issued."
+                  label="Company Registration ID (optional)"
+                  extra="Optional — enter the official Company Registration ID issued, if available."
                 >
                   <Input placeholder="e.g. CRS-2024-00123" />
                 </Form.Item>
               )}
             </Form>
+            </>
+            )}
           </Modal>
         );
       })()}

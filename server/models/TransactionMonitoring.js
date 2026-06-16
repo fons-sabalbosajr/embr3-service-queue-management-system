@@ -24,7 +24,7 @@ const transactionMonitoringSchema = new mongoose.Schema(
     },
     screeningOfficer: {
       type: String,
-      required: true,
+      default: '',
       trim: true,
     },
     eccCnc: {
@@ -34,7 +34,7 @@ const transactionMonitoringSchema = new mongoose.Schema(
     },
     transactionStatus: {
       type: String,
-      required: true,
+      default: '',
       trim: true,
     },
     specificInquiry: {
@@ -60,8 +60,14 @@ const transactionMonitoringSchema = new mongoose.Schema(
     clientCallStatus: {
       type: String,
       required: true,
-      enum: ['Queued', 'Waiting to Call', 'CALL', 'On Hold', 'Skipped', 'CLIENT MISSING', 'Done', 'Assisted'],
+      enum: ['Initialized', 'Queued', 'Waiting to Call', 'CALL', 'On Hold', 'Skipped', 'CLIENT MISSING', 'Done', 'Assisted', 'Done/Assisted'],
       default: 'Queued',
+    },
+    // True once a Queue Number Officer throws an Initialized number to the
+    // queue officer's portal. Defaults false for officer-created entries.
+    thrown: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }

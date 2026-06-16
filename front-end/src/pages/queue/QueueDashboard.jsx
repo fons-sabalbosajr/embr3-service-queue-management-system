@@ -422,7 +422,7 @@ export default function QueueDashboard() {
     const loadQueueDisplay = async () => {
       try {
         const [{ data: displayData }, { data: queueData }] = await Promise.all([
-          apiClient.get('/queue-display'),
+          apiClient.get('/queue-display/public'),
           apiClient.get('/transaction-monitoring/public-summary'),
         ]);
         if (!mounted) {
@@ -432,12 +432,12 @@ export default function QueueDashboard() {
         setConfig(displayData.config);
         setQueueItems(queueData.queueItems || []);
 
-        // Officers list — fails gracefully if the user lacks admin access
+        // Public-safe officer summary for dashboard presence and assignment only.
         try {
-          const { data: officerData } = await apiClient.get('/queue-officers');
+          const { data: officerData } = await apiClient.get('/queue-officers/public-summary');
           setQueueOfficers(officerData.officers || []);
         } catch {
-          // Non-admin viewers simply won't see officer presence dots
+          // Public viewers simply won't see officer presence dots.
         }
 
         // Build screening officer rows from live queue data

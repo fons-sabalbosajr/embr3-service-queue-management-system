@@ -3,6 +3,7 @@ const ROLE_ALIASES = {
   'Super Admin/Developer': 'Super Admin/Developer',
   Admin: 'Admin',
   'Queue Officer': 'Queue Officer',
+  'Queue Number Officer': 'Queue Number Officer',
   Secretariat: 'Secretariat',
 };
 
@@ -22,6 +23,7 @@ function accessModulesForRole(role) {
         'queue-officer',
         'queue-officer-serving-desk',
         'queue-officer-portal',
+        'queue-number-initialization',
         'secretariat',
         'queue-dashboard',
       ];
@@ -33,6 +35,14 @@ function accessModulesForRole(role) {
         'queue-officer',
         'queue-officer-serving-desk',
         'queue-officer-portal',
+        'queue-number-initialization',
+        'queue-dashboard',
+      ];
+    case 'Queue Number Officer':
+      return [
+        'dashboard',
+        'queue-officer',
+        'queue-number-initialization',
         'queue-dashboard',
       ];
     case 'Secretariat':

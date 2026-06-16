@@ -1,23 +1,12 @@
 import { Navigate } from 'react-router-dom';
-import { Spin } from 'antd';
 import { useAuth } from '../context/AuthContext';
+import LoadingScreen from './LoadingScreen';
 
 export default function ProtectedRoute({ children }) {
   const { admin, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          display: 'grid',
-          placeItems: 'center',
-          background: '#f1f5f9',
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
+    return <LoadingScreen title="Checking access" description="Validating your session and page permissions." />;
   }
 
   if (!admin) {

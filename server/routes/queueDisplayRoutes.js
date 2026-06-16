@@ -2,6 +2,7 @@ const express = require('express');
 
 const {
   getQueueDisplayConfig,
+  getPublicQueueDisplayConfig,
   updateQueueDisplaySettings,
   createQueueDisplayCard,
   updateQueueDisplayCard,
@@ -10,6 +11,8 @@ const {
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
+
+router.get('/public', getPublicQueueDisplayConfig);
 
 router.get('/', protect, getQueueDisplayConfig);
 router.put('/settings', protect, updateQueueDisplaySettings);

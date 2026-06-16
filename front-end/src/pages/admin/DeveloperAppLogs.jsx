@@ -179,7 +179,7 @@ export default function DeveloperAppLogs() {
   return (
     <AdminShell
       title="App Logs"
-      subtitle="Review, manage, and summarize audit activity across the admin console and queue dashboard."
+      subtitle="Review, manage, and summarize audit activity across the admin console and Queue Dashboard"
       extra={
         <Space wrap>
           <Input

@@ -17,7 +17,6 @@ import {
   Popconfirm,
   Row,
   Space,
-  Statistic,
   Table,
   Tag,
   Typography,
@@ -25,6 +24,7 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import apiClient from '../../api/client';
+import LoadingScreen from '../../components/LoadingScreen';
 import AdminShell from './AdminShell';
 import './AdminDataTables.css';
 
@@ -128,15 +128,6 @@ export default function SettingsDashboardDisplay() {
     }
   };
 
-  const stats = useMemo(
-    () => ({
-      cards: config?.counterCards?.length || 0,
-      active: config?.counterCards?.filter((item) => item.active).length || 0,
-      hidden: config?.counterCards?.filter((item) => !item.active).length || 0,
-    }),
-    [config]
-  );
-
   const cardColumns = [
     {
       title: 'Transaction',
@@ -204,7 +195,7 @@ export default function SettingsDashboardDisplay() {
       extra={
         <div className="admin-data-toolbar">
           <Text type="secondary">
-            Every active transaction card created here appears automatically on the queue dashboard.
+            Every active transaction card created here appears automatically on the Queue Dashboard
           </Text>
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
             Add Counter Card
@@ -212,18 +203,6 @@ export default function SettingsDashboardDisplay() {
         </div>
       }
     >
-      <div className="admin-data-stat-grid" style={{ marginBottom: 16 }}>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Counter Cards" value={stats.cards} prefix={<CheckCircleOutlined />} />
-        </Card>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Active Cards" value={stats.active} prefix={<CheckCircleOutlined />} />
-        </Card>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Hidden Cards" value={stats.hidden} prefix={<DeleteOutlined />} />
-        </Card>
-      </div>
-
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} xl={12}>
           <Card bordered={false} className="admin-data-table-card" loading={loading}>
@@ -292,11 +271,16 @@ export default function SettingsDashboardDisplay() {
       <Modal
         title={editingCard ? 'Edit Counter Card' : 'Create Counter Card'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => !savingCard && setModalOpen(false)}
         onOk={() => cardForm.submit()}
         confirmLoading={savingCard}
+        closable={!savingCard}
+        maskClosable={!savingCard}
         width={600}
       >
+        {savingCard ? (
+          <LoadingScreen compact title="Saving counter card" description="Validating the public dashboard card and display order." />
+        ) : (
         <Form form={cardForm} layout="vertical" onFinish={handleSaveCard} initialValues={{ active: true }}>
           <Form.Item
             name="transactionName"
@@ -316,6 +300,7 @@ export default function SettingsDashboardDisplay() {
             <Switch />
           </Form.Item>
         </Form>
+        )}
       </Modal>
     </AdminShell>
   );

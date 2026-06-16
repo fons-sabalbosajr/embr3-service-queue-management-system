@@ -18,19 +18,24 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
+  Empty,
   Row,
+  Skeleton,
   Space,
-  Statistic,
   Tag,
-  Timeline,
   Tooltip,
   Typography,
 } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import dayjs from 'dayjs';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import AdminShell from './AdminShell';
+import LoadingScreen from '../../components/LoadingScreen';
+
+const HomeDetailedPanels = lazy(() => import('./home/HomeDetailedPanels'))
 
 const { Text } = Typography;
 
@@ -62,37 +67,6 @@ function sortByStatus(items) {
   });
 }
 
-// SVG donut chart — pure React, no library needed
-function QueueDonut({ segments, size = 130, label, sublabel }) {
-  const r = 42;
-  const cx = size / 2;
-  const cy = size / 2;
-  const C = 2 * Math.PI * r;
-  const total = segments.reduce((s, seg) => s + (seg.value || 0), 0) || 1;
-  let cumulative = 0;
-  return (
-    <svg width={size} height={size}>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#f1f5f9" strokeWidth={14} />
-      {segments.map((seg, i) => {
-        if (!seg.value) return null;
-        const dashLen = (seg.value / total) * C;
-        const offset = C - cumulative * (C / total);
-        cumulative += seg.value;
-        return (
-          <circle key={i} cx={cx} cy={cy} r={r} fill="none"
-            stroke={seg.color} strokeWidth={14}
-            strokeDasharray={`${dashLen} ${C}`}
-            strokeDashoffset={offset}
-            style={{ transform: 'rotate(-90deg)', transformOrigin: `${cx}px ${cy}px`, transition: 'stroke-dasharray 0.6s ease' }}
-          />
-        );
-      })}
-      <text x={cx} y={cy - 6} textAnchor="middle" fontSize={17} fontWeight={800} fill="#0f172a">{label ?? total}</text>
-      <text x={cx} y={cy + 10} textAnchor="middle" fontSize={8} fill="#64748b" letterSpacing={1}>{sublabel ?? 'TOTAL'}</text>
-    </svg>
-  );
-}
-
 export default function Home() {
   const { admin } = useAuth();
   const navigate = useNavigate();
@@ -101,10 +75,32 @@ export default function Home() {
   const [officers, setOfficers] = useState([]);
   const [recentLogs, setRecentLogs] = useState([]);
   const [assistedItems, setAssistedItems] = useState([]);
+  const [qnoNumbers, setQnoNumbers] = useState([]);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dateFilterMode, setDateFilterMode] = useState('all');
+  const [singleDate, setSingleDate] = useState(null);
+  const [dateRange, setDateRange] = useState(null);
+  const canUseQno = (admin?.accessModules || []).includes('queue-number-initialization');
 
-  const loadDashboard = async () => {
+  const matchesDateFilter = (value) => {
+    if (dateFilterMode === 'all') return true
+    const date = dayjs(value)
+    if (!date.isValid()) return false
+    if (dateFilterMode === 'single') return singleDate ? date.isSame(singleDate, 'day') : true
+    if (!dateRange || !dateRange[0] || !dateRange[1]) return true
+    return date.isAfter(dateRange[0].startOf('day').subtract(1, 'millisecond')) && date.isBefore(dateRange[1].endOf('day').add(1, 'millisecond'))
+  }
+
+  const filteredQueueItems = useMemo(() => queueItems.filter((item) => matchesDateFilter(item.createdAt)), [queueItems, dateFilterMode, singleDate, dateRange])
+  const filteredRecentLogs = useMemo(() => recentLogs.filter((log) => matchesDateFilter(log.timestamp || log.createdAt)), [recentLogs, dateFilterMode, singleDate, dateRange])
+  const filteredAssistedItems = useMemo(() => assistedItems.filter((item) => matchesDateFilter(item.updatedAt || item.createdAt)), [assistedItems, dateFilterMode, singleDate, dateRange])
+  const filteredQnoNumbers = useMemo(() => qnoNumbers.filter((item) => matchesDateFilter(item.createdAt)), [qnoNumbers, dateFilterMode, singleDate, dateRange])
+
+  const loadDashboard = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const [displayRes, summaryRes] = await Promise.all([
         apiClient.get('/queue-display'),
@@ -117,6 +113,16 @@ export default function Home() {
       );
       setQueueItems(summaryRes.data.queueItems || []);
       setLastUpdated(new Date());
+
+      if (canUseQno) {
+        try {
+          const { data: qnoData } = await apiClient.get('/queue-officers/qno/numbers');
+          setQnoNumbers(qnoData.numbers || []);
+        } catch {
+          setQnoNumbers([]);
+        }
+      }
+
       try {
         const [officersRes, logsRes, txnRes] = await Promise.all([
           apiClient.get('/queue-officers'),
@@ -132,29 +138,42 @@ export default function Home() {
     } catch {
       // Network error — silently skip
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     loadDashboard();
-    const id = setInterval(loadDashboard, REFRESH_MS);
+    const id = setInterval(() => loadDashboard({ silent: true }), REFRESH_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [canUseQno]);
 
   const stats = useMemo(() => ({
-    serving: queueItems.filter((i) => i.clientCallStatus === 'CALL').length,
-    waiting: queueItems.filter((i) => ['Waiting to Call', 'Queued'].includes(i.clientCallStatus)).length,
-    missing: queueItems.filter((i) => i.clientCallStatus === 'CLIENT MISSING').length,
-    total: queueItems.length,
-    priority: queueItems.filter((i) => isPriority(i.clientStatus)).length,
-    regular: queueItems.filter((i) => !isPriority(i.clientStatus)).length,
+    serving: filteredQueueItems.filter((i) => i.clientCallStatus === 'CALL').length,
+    waiting: filteredQueueItems.filter((i) => ['Waiting to Call', 'Queued'].includes(i.clientCallStatus)).length,
+    missing: filteredQueueItems.filter((i) => i.clientCallStatus === 'CLIENT MISSING').length,
+    total: filteredQueueItems.length,
+    priority: filteredQueueItems.filter((i) => isPriority(i.clientStatus)).length,
+    regular: filteredQueueItems.filter((i) => !isPriority(i.clientStatus)).length,
     availableOfficers: officers.filter((o) => o.status === 'Available').length,
-  }), [queueItems, officers]);
+  }), [filteredQueueItems, officers]);
+
+  const qnoStats = useMemo(() => ({
+    ready: filteredQnoNumbers.filter((item) => !item.thrown).length,
+    thrown: filteredQnoNumbers.filter((item) => item.thrown).length,
+    priority: filteredQnoNumbers.filter((item) => isPriority(item.clientStatus) && !item.thrown).length,
+  }), [filteredQnoNumbers]);
+
+  const qnoRecent = useMemo(
+    () => [...filteredQnoNumbers].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt)).slice(0, 6),
+    [filteredQnoNumbers]
+  );
 
   const cardData = useMemo(() => counterCards.map((card) => {
     const t = normText(card.transactionName);
-    const matching = queueItems.filter((item) => {
+    const matching = filteredQueueItems.filter((item) => {
       const e = normText(item.eccCnc);
       return e === t || e.includes(t) || t.includes(e);
     });
@@ -172,19 +191,19 @@ export default function Home() {
         (o) => normText(o.assignedTransaction) === t
       ),
     };
-  }), [counterCards, queueItems, officers]);
+  }), [counterCards, filteredQueueItems, officers]);
 
   // Log severity counts for chart
   const logSeverityCounts = useMemo(() => {
     const counts = { Info: 0, Notice: 0, Warning: 0, Critical: 0 };
-    recentLogs.forEach((log) => { counts[log.severity] = (counts[log.severity] || 0) + 1; });
+    filteredRecentLogs.forEach((log) => { counts[log.severity] = (counts[log.severity] || 0) + 1; });
     return counts;
-  }, [recentLogs]);
+  }, [filteredRecentLogs]);
 
   // Assisted clients grouped by officer
   const assistedByOfficer = useMemo(() => {
     const counts = {};
-    assistedItems.forEach((item) => {
+    filteredAssistedItems.forEach((item) => {
       const officer = item.screeningOfficer || 'Unknown';
       counts[officer] = (counts[officer] || 0) + 1;
     });
@@ -192,12 +211,27 @@ export default function Home() {
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
-  }, [assistedItems]);
+  }, [filteredAssistedItems]);
+
+  if (loading && !lastUpdated) {
+    return (
+      <AdminShell
+        title={`Queue Dashboard — ${admin?.name?.split(' ')[0] || 'Admin'}`}
+        subtitle="Real-time monitoring of all active service counters and queuing activity."
+      >
+        <LoadingScreen
+          compact
+          title="Loading dashboard"
+          description="Preparing counters, queue activity, officer readiness, and QNO metrics."
+        />
+      </AdminShell>
+    )
+  }
 
   return (
     <AdminShell
-      title={`Queue Operations — ${admin?.name?.split(' ')[0] || 'Admin'}`}
-      subtitle="Real-time monitoring of all active service counters and queuing activity."
+      title={`Queue Dashboard — ${admin?.name?.split(' ')[0] || 'Admin'}`}
+      // subtitle="Real-time monitoring of active service counters, queue readiness, and Queue Number Officer flow."
       titleExtra={
         <Space wrap align="center">
           {lastUpdated && (
@@ -208,460 +242,163 @@ export default function Home() {
           <Button size="small" icon={<ReloadOutlined />} onClick={loadDashboard} loading={loading}>
             Refresh
           </Button>
+          <Tag color="blue">{dateFilterMode === 'all' ? 'All dates' : dateFilterMode === 'single' ? 'Single date' : 'Date range'}</Tag>
+          {canUseQno ? (
+            <Button size="small" icon={<FireOutlined className="anim-icon-pulse" />} onClick={() => navigate('/home/queue-officer/queue-number-initialization')}>
+              QNO Console
+            </Button>
+          ) : null}
           <Button type="primary" size="small" icon={<DesktopOutlined />} onClick={() => navigate('/queue-dashboard')}>
             Launch Public Board
           </Button>
         </Space>
       }
+      extra={
+        <Space wrap>
+          <Button size="small" type={dateFilterMode === 'all' ? 'primary' : 'default'} onClick={() => { setDateFilterMode('all'); setSingleDate(null); setDateRange(null); }}>
+            All Dates
+          </Button>
+          <Button size="small" type={dateFilterMode === 'single' ? 'primary' : 'default'} onClick={() => { setDateFilterMode('single'); setDateRange(null); }}>
+            Single Date
+          </Button>
+          <Button size="small" type={dateFilterMode === 'range' ? 'primary' : 'default'} onClick={() => { setDateFilterMode('range'); setSingleDate(null); }}>
+            Date Range
+          </Button>
+          {dateFilterMode === 'single' ? <DatePicker value={singleDate} onChange={setSingleDate} /> : null}
+          {dateFilterMode === 'range' ? <DatePicker.RangePicker value={dateRange} onChange={setDateRange} /> : null}
+        </Space>
+      }
     >
-      {/* ── Live stats row ──────────────────────────────────────────── */}
-      <Row gutter={[14, 14]} style={{ marginBottom: 16 }}>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} size="small" style={{ textAlign: 'center', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10 }}>
-            <Statistic
-              title={<Text style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#1e40af' }}>Now Serving</Text>}
-              value={stats.serving}
-              valueStyle={{ color: '#1d4ed8', fontWeight: 900, fontSize: 32 }}
-              prefix={<NotificationOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} size="small" style={{ textAlign: 'center', background: '#fefce8', border: '1px solid #fde68a', borderRadius: 10 }}>
-            <Statistic
-              title={<Text style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#92400e' }}>Waiting</Text>}
-              value={stats.waiting}
-              valueStyle={{ color: '#d97706', fontWeight: 900, fontSize: 32 }}
-              prefix={<ClockCircleOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} size="small" style={{ textAlign: 'center', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
-            <Statistic
-              title={<Text style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#14532d' }}>Officers Ready</Text>}
-              value={stats.availableOfficers}
-              valueStyle={{ color: '#15803d', fontWeight: 900, fontSize: 32 }}
-              prefix={<TeamOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} size="small" style={{ textAlign: 'center', background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: 10 }}>
-            <Statistic
-              title={<Text style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#581c87' }}>In Queue</Text>}
-              value={stats.total}
-              valueStyle={{ color: '#7c3aed', fontWeight: 900, fontSize: 32 }}
-              prefix={<UserOutlined />}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      {/* ── Analytics & Trends ─────────────────────────────────────── */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} md={10}>
+        <Col xs={24} xl={canUseQno ? 15 : 24}>
           <Card
             bordered={false}
-            size="small"
-            title={
-              <Space>
-                <BarChartOutlined style={{ color: '#1d4ed8' }} />
-                <span style={{ fontWeight: 700 }}>Queue Load by Counter</span>
-              </Space>
-            }
-            style={{ height: '100%' }}
+            className="admin-data-table-card"
+            style={{
+              background: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #0ea5e9 100%)',
+              overflow: 'hidden',
+            }}
           >
-            {cardData.length === 0 ? (
-              <Text type="secondary" style={{ fontSize: 13 }}>No active counters configured.</Text>
-            ) : (
-              <div>
-                {cardData.map((card) => {
-                  const maxVal = Math.max(...cardData.map((c) => c.activeCount), 1);
-                  const pct = maxVal > 0 ? Math.round((card.activeCount / maxVal) * 100) : 0;
-                  return (
-                    <div key={card._id} style={{ marginBottom: 12 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, gap: 8 }}>
-                        <Text style={{ fontSize: 11, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {card.transactionName}
-                        </Text>
-                        <Space size={4}>
-                          {card.servingReg && <Tag style={{ margin: 0, fontSize: 10 }} color="blue">Reg {extractNum(card.servingReg.clientCardNo)}</Tag>}
-                          {card.servingPri && <Tag style={{ margin: 0, fontSize: 10 }} color="gold">Pri {extractNum(card.servingPri.clientCardNo)}</Tag>}
-                          <Text style={{ fontSize: 11, color: '#64748b' }}>{card.activeCount}</Text>
-                        </Space>
-                      </div>
-                      <div style={{ background: '#e2e8f0', borderRadius: 6, height: 9, overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', height: '100%' }}>
-                          {card.servingReg || card.servingPri ? (
-                            <div style={{
-                              width: `${Math.max(pct > 0 ? 12 : 0, 12)}%`,
-                              maxWidth: `${pct}%`,
-                              background: 'linear-gradient(90deg,#1d4ed8,#3b82f6)',
-                              borderRadius: '6px 0 0 6px',
-                              transition: 'width 0.5s ease',
-                            }} />
-                          ) : null}
-                          <div style={{
-                            width: `${pct - (card.servingReg || card.servingPri ? Math.max(pct > 0 ? 12 : 0, 12) : 0)}%`,
-                            background: '#93c5fd',
-                            borderRadius: card.servingReg || card.servingPri ? '0 6px 6px 0' : 6,
-                            transition: 'width 0.5s ease',
-                          }} />
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-                        <Text style={{ fontSize: 9, color: '#64748b' }}>{card.waiting} waiting</Text>
-                        {card.cardOfficers.map((o) => (
-                          <span key={o._id} style={{ fontSize: 9, color: o.status === 'Available' ? '#15803d' : '#94a3b8' }}>• {o.name}</span>
-                        ))}
-                      </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ maxWidth: 620 }}>
+                <Tag style={{ marginBottom: 10, background: 'rgba(255,255,255,0.14)', borderColor: 'rgba(255,255,255,0.22)', color: '#e0f2fe' }}>
+                  Live Command Center
+                </Tag>
+                <div style={{ color: '#fff', fontWeight: 900, fontSize: 28, lineHeight: 1.1, marginBottom: 8 }}>
+                  Queue Dashboard
+                </div>
+                <Text style={{ color: 'rgba(255,255,255,0.82)', fontSize: 13 }}>
+                  Track active counters, ready numbers, queue pressure, and officer readiness from one screen.
+                </Text>
+                <Space wrap style={{ marginTop: 14 }}>
+                  <Button type="primary" ghost icon={<NotificationOutlined className="anim-icon-ring" />} onClick={() => navigate('/home/queue-officer/my-queue-portal')}>
+                    Open Queue Portal
+                  </Button>
+                  {canUseQno ? (
+                    <Button style={{ background: '#fff', color: '#1d4ed8', borderColor: '#fff' }} icon={<FireOutlined className="anim-icon-pulse" />} onClick={() => navigate('/home/queue-officer/queue-number-initialization')}>
+                      Generate Ready Numbers
+                    </Button>
+                  ) : null}
+                </Space>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 10, minWidth: 260, flex: '1 1 260px' }}>
+                {[
+                  { label: 'Serving', value: stats.serving, color: '#6ee7b7', icon: <NotificationOutlined className="anim-icon-ring" /> },
+                  { label: 'Waiting', value: stats.waiting, color: '#fde68a', icon: <ClockCircleOutlined className="anim-icon-pulse" /> },
+                  { label: 'Ready QNO', value: qnoStats.ready, color: '#bfdbfe', icon: <FireOutlined className="anim-icon-pop" /> },
+                  { label: 'Officers Ready', value: stats.availableOfficers, color: '#c4b5fd', icon: <TeamOutlined className="anim-icon-wiggle" /> },
+                ].map((item) => (
+                  <div key={item.label} style={{ borderRadius: 16, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.15)', padding: '14px 16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{item.label}</Text>
+                      <span style={{ color: item.color, fontSize: 16 }}>{item.icon}</span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-        </Col>
-
-        {/* Merged: Status Distribution + Activity by Severity */}
-        <Col xs={24} md={7}>
-          <Card
-            bordered={false}
-            size="small"
-            title={
-              <Space>
-                <RiseOutlined style={{ color: '#7c3aed' }} />
-                <span style={{ fontWeight: 700 }}>Analytics Overview</span>
-                <Text type="secondary" style={{ fontSize: 11 }}>(last 20 logs)</Text>
-              </Space>
-            }
-            style={{ height: '100%' }}
-          >
-            {/* ── Row 1: Two donuts side by side ────────────────── */}
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-              {/* Status donut */}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <QueueDonut
-                  size={130}
-                  label={stats.serving + stats.waiting + stats.missing}
-                  sublabel="IN QUEUE"
-                  segments={[
-                    { value: stats.serving, color: '#1d4ed8' },
-                    { value: stats.waiting, color: '#f59e0b' },
-                    { value: stats.missing, color: '#ef4444' },
-                  ]}
-                />
-                <Text style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 1, textTransform: 'uppercase' }}>Queue Status</Text>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-                  {[
-                    { label: 'Serving', value: stats.serving, color: '#1d4ed8' },
-                    { label: 'Waiting', value: stats.waiting, color: '#f59e0b' },
-                    { label: 'Missing', value: stats.missing, color: '#ef4444' },
-                  ].map((item) => {
-                    const total = stats.serving + stats.waiting + stats.missing || 1;
-                    return (
-                      <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: item.color, flexShrink: 0 }} />
-                        <Text style={{ fontSize: 10, color: '#64748b' }}>{item.label}</Text>
-                        <Text style={{ fontSize: 10, fontWeight: 700, color: item.color }}>{item.value}</Text>
-                        <Text style={{ fontSize: 9, color: '#94a3b8' }}>({Math.round((item.value / total) * 100)}%)</Text>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Lane donut */}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <QueueDonut
-                  size={130}
-                  label={stats.priority + stats.regular}
-                  sublabel="CLIENTS"
-                  segments={[
-                    { value: stats.priority, color: '#b45309' },
-                    { value: stats.regular, color: '#1d4ed8' },
-                  ]}
-                />
-                <Text style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 1, textTransform: 'uppercase' }}>Client Type</Text>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-                  {[
-                    { label: 'Priority', value: stats.priority, color: '#b45309' },
-                    { label: 'Regular', value: stats.regular, color: '#1d4ed8' },
-                  ].map((item) => {
-                    const total = (stats.priority + stats.regular) || 1;
-                    return (
-                      <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: item.color, flexShrink: 0 }} />
-                        <Text style={{ fontSize: 10, color: '#64748b' }}>{item.label}</Text>
-                        <Text style={{ fontSize: 10, fontWeight: 700, color: item.color }}>{item.value}</Text>
-                        <Text style={{ fontSize: 9, color: '#94a3b8' }}>({Math.round((item.value / total) * 100)}%)</Text>
-                      </div>
-                    );
-                  })}
-                </div>
+                    <div style={{ color: '#fff', fontWeight: 900, fontSize: 28, lineHeight: 1 }}>{item.value}</div>
+                  </div>
+                ))}
               </div>
             </div>
-
-            {/* ── Divider ────────────────────────────────────────── */}
-            <div style={{ height: 1, background: '#f1f5f9', margin: '0 0 10px' }} />
-
-            {/* ── Row 2: Log severity horizontal bars ───────────── */}
-            <Text style={{ fontSize: 10, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-              Log Severity (last 20)
-            </Text>
-            {(() => {
-              const bars = [
-                { label: 'Info', color: '#3b82f6', count: logSeverityCounts.Info },
-                { label: 'Notice', color: '#a855f7', count: logSeverityCounts.Notice },
-                { label: 'Warning', color: '#f59e0b', count: logSeverityCounts.Warning },
-                { label: 'Critical', color: '#ef4444', count: logSeverityCounts.Critical },
-              ];
-              const maxCount = Math.max(...bars.map((b) => b.count), 1);
-              return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                  {bars.map((bar) => (
-                    <div key={bar.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Text style={{ fontSize: 10, color: bar.color, fontWeight: 700, width: 46, flexShrink: 0, textAlign: 'right' }}>{bar.label}</Text>
-                      <div style={{ flex: 1, background: '#f1f5f9', borderRadius: 4, height: 10, overflow: 'hidden' }}>
-                        <div style={{
-                          width: bar.count > 0 ? `${Math.max((bar.count / maxCount) * 100, 6)}%` : '0%',
-                          height: '100%',
-                          background: bar.color,
-                          borderRadius: 4,
-                          transition: 'width 0.6s ease',
-                        }} />
-                      </div>
-                      <Text style={{ fontSize: 10, fontWeight: 700, color: bar.color, width: 18, textAlign: 'right', flexShrink: 0 }}>{bar.count}</Text>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
           </Card>
         </Col>
 
-        {/* ── Assisted by Officers bar chart ─────────────────────── */}
-        <Col xs={24} md={7}>
-          <Card
-            bordered={false}
-            size="small"
-            title={
-              <Space>
-                <LikeOutlined style={{ color: '#7c3aed' }} />
-                <span style={{ fontWeight: 700 }}>Assisted by Officer</span>
-                <Tag style={{ margin: 0, fontSize: 10 }} color="purple">{assistedItems.length} total</Tag>
-              </Space>
-            }
-            style={{ height: '100%' }}
-          >
-            {assistedByOfficer.length === 0 ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>No assisted transactions recorded yet.</Text>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {assistedByOfficer.map((row) => {
-                  const maxCount = assistedByOfficer[0]?.count || 1;
-                  const pct = Math.max(Math.round((row.count / maxCount) * 100), 6);
-                  return (
-                    <div key={row.name}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <Text style={{ fontSize: 11, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {row.name}
-                        </Text>
-                        <Text style={{ fontSize: 11, color: '#7c3aed', fontWeight: 700, flexShrink: 0 }}>{row.count}</Text>
-                      </div>
-                      <div style={{ background: '#f1f5f9', borderRadius: 6, height: 8, overflow: 'hidden' }}>
-                        <div style={{
-                          width: `${pct}%`,
-                          height: '100%',
-                          background: 'linear-gradient(90deg, #7c3aed, #a855f7)',
-                          borderRadius: 6,
-                          transition: 'width 0.5s ease',
-                        }} />
-                      </div>
-                    </div>
-                  );
-                })}
-                <div style={{ marginTop: 4, borderTop: '1px solid #f1f5f9', paddingTop: 6 }}>
-                  <Text style={{ fontSize: 10, color: '#94a3b8' }}>
-                    Total: {assistedItems.length} assisted client{assistedItems.length !== 1 ? 's' : ''}
-                  </Text>
-                </div>
-              </div>
-            )}
-          </Card>
-        </Col>
-      </Row>
-
-      <Row gutter={[16, 16]}>
-        {/* ── Counter cards ──────────────────────────────────────────── */}
-        <Col xs={24} xl={16}>
-          <Card
-            bordered={false}
-            title={
-              <Space>
-                <NotificationOutlined style={{ color: '#1d4ed8' }} />
-                <span style={{ fontWeight: 700 }}>Counter Status</span>
-                <Badge count={counterCards.length} style={{ background: '#1d4ed8' }} />
-              </Space>
-            }
-            bodyStyle={{ padding: '12px 16px' }}
-          >
-            {counterCards.length === 0 ? (
-              <Text type="secondary">No active counter cards configured. Add them in Settings → Queue Display.</Text>
-            ) : (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-                gap: 12,
-                alignItems: 'stretch',
-              }}>
-                {cardData.map((card) => (
-                  <div key={card._id} style={{
-                    border: '1px solid #e2e8f0',
-                    borderRadius: 10,
-                    overflow: 'hidden',
-                    background: '#ffffff',
-                    boxShadow: '0 2px 14px -4px rgba(15,23,42,0.1)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                  }}>
-                      {/* Card header */}
-                      <div style={{
-                        background: 'linear-gradient(90deg, #1e3a8a 0%, #1d4ed8 100%)',
-                        padding: '8px 14px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                      }}>
-                        <Text style={{ color: '#fff', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1 }}>
-                          {card.transactionName}
-                        </Text>
-                        <Tag style={{ margin: 0, fontSize: 11, background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff' }}>
-                          {card.waiting} waiting
-                        </Tag>
-                      </div>
-
-                      {/* Number display */}
-                      <div style={{ display: 'flex' }}>
-                        {/* Regular lane */}
-                        <div style={{ flex: 1, padding: '10px 12px', borderRight: '1px solid #f1f5f9', textAlign: 'center' }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                            <UserOutlined /> Regular
-                          </div>
-                          <div style={{ fontSize: 30, fontWeight: 900, color: card.servingReg ? '#1d4ed8' : '#94a3b8', lineHeight: 1.1, letterSpacing: 2, fontVariantNumeric: 'tabular-nums' }}>
-                            {extractNum(card.servingReg?.clientCardNo)}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                            {card.nextReg
-                              ? <>next: <strong style={{ color: '#1d4ed8' }}>{extractNum(card.nextReg.clientCardNo)}</strong></>
-                              : <span style={{ opacity: 0.5 }}>no next</span>}
-                          </div>
-                        </div>
-
-                        {/* Priority lane */}
-                        <div style={{ flex: 1, padding: '10px 12px', background: '#fffbf0', textAlign: 'center' }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: '#92400e', marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                            <HeartOutlined /> Priority
-                          </div>
-                          <div style={{ fontSize: 30, fontWeight: 900, color: card.servingPri ? '#b45309' : '#94a3b8', lineHeight: 1.1, letterSpacing: 2, fontVariantNumeric: 'tabular-nums' }}>
-                            {extractNum(card.servingPri?.clientCardNo)}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#92400e', marginTop: 2 }}>
-                            {card.nextPri
-                              ? <>next: <strong>{extractNum(card.nextPri.clientCardNo)}</strong></>
-                              : <span style={{ opacity: 0.5 }}>no next</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Assigned officers */}
-                      {card.cardOfficers.length > 0 && (
-                        <div style={{ padding: '5px 12px', borderTop: '1px solid #f1f5f9', background: '#f8fafc', display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 'auto' }}>
-                          {card.cardOfficers.map((o) => (
-                            <Tooltip key={o._id} title={o.position || o.designation}>
-                              <Tag
-                                style={{ margin: 0, fontSize: 11 }}
-                                color={o.status === 'Available' ? 'green' : 'default'}
-                              >
-                                <span style={{
-                                  display: 'inline-block',
-                                  width: 6, height: 6,
-                                  borderRadius: '50%',
-                                  background: o.status === 'Available' ? '#22c55e' : '#94a3b8',
-                                  marginRight: 4,
-                                  verticalAlign: 'middle',
-                                }} />
-                                {o.name}
-                              </Tag>
-                            </Tooltip>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-              </div>
-            )}
-          </Card>
-        </Col>
-
-        {/* ── Right column ───────────────────────────────────────────── */}
-        <Col xs={24} xl={8}>
-          <Space direction="vertical" style={{ width: '100%' }} size={14}>
-            {/* Missing clients alert */}
-            {stats.missing > 0 && (
-              <Card
-                bordered={false}
-                size="small"
-                style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10 }}
-              >
-                <Space>
-                  <WarningOutlined style={{ color: '#b91c1c', fontSize: 18 }} />
-                  <div>
-                    <Text style={{ color: '#b91c1c', fontWeight: 700 }}>{stats.missing} client{stats.missing > 1 ? 's' : ''} missing</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 12 }}>Check the queue list in the portal.</Text>
-                  </div>
-                </Space>
-              </Card>
-            )}
-
-            {/* Recent activity */}
+        {canUseQno ? (
+          <Col xs={24} xl={9}>
             <Card
               bordered={false}
-              size="small"
+              className="admin-data-table-card"
               title={
                 <Space>
-                  <ClockCircleOutlined style={{ color: '#7c3aed' }} />
-                  <span style={{ fontWeight: 700 }}>Recent Activity</span>
+                  <FireOutlined className="anim-icon-pulse" style={{ color: '#f97316' }} />
+                  <span style={{ fontWeight: 700 }}>QNO Launchpad</span>
                 </Space>
               }
-              bodyStyle={{ padding: '8px 16px', maxHeight: 340, overflowY: 'auto' }}
+              extra={<Tag color="blue">{qnoRecent.length} recent</Tag>}
+              style={{ height: '100%' }}
             >
-              {recentLogs.length === 0 ? (
-                <Text type="secondary" style={{ fontSize: 13 }}>No recent activity recorded.</Text>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                <Tag color="default">Ready {qnoStats.ready}</Tag>
+                <Tag color="processing">Thrown {qnoStats.thrown}</Tag>
+                <Tag color="orange">Priority {qnoStats.priority}</Tag>
+              </div>
+
+              {qnoRecent.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No initialized numbers yet." />
               ) : (
-                <Timeline
-                  style={{ marginTop: 8 }}
-                  items={recentLogs.map((log) => ({
-                    color: log.severity === 'Critical' || log.severity === 'Warning' ? 'red' : log.severity === 'Notice' ? 'blue' : 'gray',
-                    children: (
-                      <div style={{ marginBottom: 2 }}>
-                        <Text style={{ fontSize: 12, fontWeight: 600, display: 'block' }}>{log.action}</Text>
-                        <Text type="secondary" style={{ fontSize: 11 }}>{log.actor} · {log.scope}</Text>
-                        <br />
-                        <Text type="secondary" style={{ fontSize: 10 }}>
-                          {log.timestamp ? new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {qnoRecent.map((item) => (
+                    <div key={item._id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '10px 12px', borderRadius: 12, background: item.thrown ? '#eff6ff' : '#f8fafc', border: `1px solid ${item.thrown ? '#bfdbfe' : '#e2e8f0'}` }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Tag className={item.thrown ? '' : 'qno-ready-number'} color={item.thrown ? 'processing' : 'default'} style={{ margin: 0, fontWeight: 800 }}>
+                            {extractNum(item.clientCardNo)}
+                          </Tag>
+                          <Text strong style={{ fontSize: 12 }}>{item.eccCnc}</Text>
+                        </div>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          {item.clientStatus || 'Regular'} · {item.thrown ? 'Thrown to queue officer' : 'Waiting for handoff'}
                         </Text>
                       </div>
-                    ),
-                  }))}
-                />
+                      <span style={{ color: item.thrown ? '#1d4ed8' : '#64748b', fontSize: 18 }}>
+                        {item.thrown ? <CheckCircleOutlined className="anim-icon-pop" /> : <FireOutlined className="anim-icon-pulse" />}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
             </Card>
-          </Space>
-        </Col>
+          </Col>
+        ) : null}
       </Row>
+
+      {canUseQno ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+          <Tag color="blue">Ready {qnoStats.ready}</Tag>
+          <Tag color="processing">Thrown {qnoStats.thrown}</Tag>
+          <Tag color="orange">Priority {qnoStats.priority}</Tag>
+        </div>
+      ) : null}
+
+      <Suspense
+        fallback={
+          <LoadingScreen
+            compact
+            title="Loading dashboard panels"
+            description="Fetching analytics, counter cards, and recent activity widgets."
+          />
+        }
+      >
+        <HomeDetailedPanels
+          assistedByOfficer={assistedByOfficer}
+          assistedItems={filteredAssistedItems}
+          cardData={cardData}
+          counterCards={counterCards}
+          loading={loading}
+          logSeverityCounts={logSeverityCounts}
+          recentLogs={filteredRecentLogs}
+          stats={stats}
+        />
+      </Suspense>
     </AdminShell>
   );
 }

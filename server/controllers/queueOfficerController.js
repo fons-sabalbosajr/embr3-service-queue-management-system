@@ -1,8 +1,10 @@
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const Counter = require('../models/Counter');
 const QueueOfficer = require('../models/QueueOfficer');
 const TransactionMonitoring = require('../models/TransactionMonitoring');
 const logEvent = require('../utils/logEvent');
+const { notifyForEntryLane } = require('../utils/pushNotifications');
 
 const DEFAULT_OFFICER_ACCESS = [
   'dashboard',
@@ -14,7 +16,11 @@ const DEFAULT_OFFICER_ACCESS = [
 
 function normalizeOfficerAccess(accessModules = []) {
   const values = new Set(accessModules.filter(Boolean));
-  if (values.has('queue-officer-serving-desk') || values.has('queue-officer-portal')) {
+  if (
+    values.has('queue-officer-serving-desk') ||
+    values.has('queue-officer-portal') ||
+    values.has('queue-number-initialization')
+  ) {
     values.add('queue-officer');
   } else {
     values.delete('queue-officer');
@@ -85,6 +91,22 @@ function belongsToOfficer(entry, officer) {
   return entry.screeningOfficer === officer.name;
 }
 
+// A queue officer may also act on a number that a Queue Number Officer threw to
+// their counter, even though it is not yet bound to a specific officer.
+function canOfficerHandle(entry, officer) {
+  if (belongsToOfficer(entry, officer)) {
+    return true;
+  }
+
+  return Boolean(
+    entry &&
+      officer &&
+      entry.thrown &&
+      !entry.queueOfficerId &&
+      entry.eccCnc === officer.assignedTransaction
+  );
+}
+
 async function nextQueueNumberForTransaction(assignedTransaction, clientStatus) {
   const isPriority = typeof clientStatus === 'string'
     && ['priority', 'senior', 'pwd'].some((kw) => clientStatus.toLowerCase().includes(kw));
@@ -123,6 +145,22 @@ async function nextEmployeeId() {
 async function listQueueOfficers(_req, res) {
   const officers = await QueueOfficer.find().sort({ createdAt: -1 });
   return res.json({ officers });
+}
+
+async function listPublicQueueOfficerSummary(_req, res) {
+  try {
+    const officers = await QueueOfficer.find(
+      { accountStatus: 'Active', status: 'Available', isOnline: true },
+      { name: 1, assignedTransaction: 1, status: 1, isOnline: 1 }
+    )
+      .sort({ name: 1 })
+      .lean();
+
+    return res.json({ officers });
+  } catch (error) {
+    console.error('List public queue officer summary error:', error);
+    return res.status(500).json({ message: 'Failed to load public queue officer summary.' });
+  }
 }
 
 async function createQueueOfficer(req, res) {
@@ -290,8 +328,9 @@ async function listPortalEntries(req, res) {
       $or: [
         { queueOfficerId: String(officer._id) },
         { queueOfficerId: '', screeningOfficer: officer.name },
+        { queueOfficerId: '', thrown: true, eccCnc: officer.assignedTransaction },
       ],
-      clientCallStatus: { $nin: ['Done', 'Assisted'] },
+      clientCallStatus: { $nin: ['Done', 'Assisted', 'Done/Assisted'] },
     }).lean();
 
     return res.json({
@@ -373,7 +412,7 @@ async function updatePortalEntry(req, res) {
       return res.status(404).json({ message: 'Queue entry not found.' });
     }
 
-    if (!belongsToOfficer(entry, officer)) {
+    if (!canOfficerHandle(entry, officer)) {
       return res.status(403).json({ message: 'You can only edit entries for the selected officer.' });
     }
 
@@ -386,7 +425,6 @@ async function updatePortalEntry(req, res) {
       companyOrApplicationNo,
       clientCallStatus,
     } = req.body;
-
     entry.clientName = clientName ?? entry.clientName;
     entry.clientStatus = clientStatus ?? entry.clientStatus;
     entry.eccCnc = generalInquiry ?? entry.eccCnc;
@@ -396,6 +434,8 @@ async function updatePortalEntry(req, res) {
     entry.clientCallStatus = clientCallStatus ?? entry.clientCallStatus;
     entry.screeningOfficer = officer.name;
     entry.queueOfficerId = String(officer._id);
+    // Once an officer fills in a thrown number it becomes a regular bound entry.
+    entry.thrown = false;
     // Admin/developer may force-correct the queue number on edit.
     if (req.admin && req.body.clientCardNo) {
       entry.clientCardNo = String(req.body.clientCardNo).trim();
@@ -417,13 +457,16 @@ async function callPortalEntry(req, res) {
     }
 
     const { id } = req.params;
+    if (!id || !mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid queue entry id.' });
+    }
     const entry = await TransactionMonitoring.findById(id);
 
     if (!entry) {
       return res.status(404).json({ message: 'Queue entry not found.' });
     }
 
-    if (!belongsToOfficer(entry, officer)) {
+    if (!canOfficerHandle(entry, officer)) {
       return res.status(403).json({ message: 'You can only call entries created from your portal.' });
     }
 
@@ -454,6 +497,8 @@ async function callPortalEntry(req, res) {
 
     entry.clientCallStatus = 'CALL';
     entry.screeningOfficer = officer.name;
+    if (!entry.queueOfficerId) entry.queueOfficerId = String(officer._id);
+    entry.thrown = false;
     await entry.save();
 
     await logEvent({
@@ -464,6 +509,8 @@ async function callPortalEntry(req, res) {
       source: 'Queue Officer',
       details: `${entry.clientName} called for ${officer.assignedTransaction}.`,
     });
+
+    await notifyForEntryLane(entry);
 
     return res.json({ entry });
   } catch (error) {
@@ -483,7 +530,7 @@ async function updatePortalEntryStatus(req, res) {
     const { clientCallStatus, receiptDate, receiptTime, companyOrApplicationNo } = req.body;
     // Done and Assisted are terminal states — they remove the entry from the
     // active queue list but keep it in Transaction Monitoring history.
-    const allowedStatuses = ['Waiting to Call', 'On Hold', 'Skipped', 'Done', 'Assisted'];
+    const allowedStatuses = ['Waiting to Call', 'On Hold', 'Skipped', 'CLIENT MISSING', 'Done', 'Assisted', 'Done/Assisted'];
 
     if (!allowedStatuses.includes(clientCallStatus)) {
       return res.status(400).json({ message: 'Invalid portal queue status.' });
@@ -494,18 +541,21 @@ async function updatePortalEntryStatus(req, res) {
       return res.status(404).json({ message: 'Queue entry not found.' });
     }
 
-    if (!belongsToOfficer(entry, officer)) {
+    if (!canOfficerHandle(entry, officer)) {
       return res.status(403).json({ message: 'You can only update entries created from your portal.' });
     }
 
     entry.clientCallStatus = clientCallStatus;
+    if (!entry.queueOfficerId) entry.queueOfficerId = String(officer._id);
+    if (!entry.screeningOfficer) entry.screeningOfficer = officer.name;
+    entry.thrown = false;
     // Persist optional completion-data fields supplied by the completion modal.
     if (receiptDate !== undefined) entry.receiptDate = receiptDate;
     if (receiptTime !== undefined) entry.receiptTime = receiptTime;
     if (companyOrApplicationNo !== undefined) entry.companyOrApplicationNo = companyOrApplicationNo;
     await entry.save();
 
-    const isTerminal = clientCallStatus === 'Done' || clientCallStatus === 'Assisted';
+    const isTerminal = clientCallStatus === 'Done' || clientCallStatus === 'Assisted' || clientCallStatus === 'Done/Assisted';
     await logEvent({
       actor: officer.name,
       action: `${clientCallStatus}: ${entry.clientCardNo}`,
@@ -514,6 +564,8 @@ async function updatePortalEntryStatus(req, res) {
       source: 'Queue Officer',
       details: `${entry.clientName} (${entry.clientStatus}) marked as ${clientCallStatus} for ${officer.assignedTransaction}. Inquiry: ${entry.eccCnc} — ${entry.transactionStatus}.`,
     });
+
+    await notifyForEntryLane(entry);
 
     return res.json({ entry });
   } catch (error) {
@@ -618,8 +670,129 @@ async function deletePortalEntry(req, res) {
   }
 }
 
+// ── Queue Number Officer (QNO) — number initialization ─────────────────────
+
+// Lists the gray "ready" numbers generated by the Queue Number Officer that are
+// still in the Initialized state (both un-thrown and already thrown).
+async function listInitializedNumbers(_req, res) {
+  try {
+    const numbers = await TransactionMonitoring.find({
+      clientCallStatus: 'Initialized',
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ numbers });
+  } catch (error) {
+    console.error('List initialized numbers error:', error);
+    return res.status(500).json({ message: 'Failed to load initialized numbers.' });
+  }
+}
+
+// Generates a new ready (gray) queue number for a given inquiry type.
+async function createInitializedNumber(req, res) {
+  try {
+    const { inquiryType, clientStatus = 'Regular' } = req.body;
+
+    if (!inquiryType) {
+      return res.status(400).json({ message: 'Inquiry type is required.' });
+    }
+
+    const queueNumber = await nextQueueNumberForTransaction(inquiryType, clientStatus);
+    const entry = await TransactionMonitoring.create({
+      queueOfficerId: '',
+      clientName: '',
+      clientCardNo: queueNumber,
+      clientStatus,
+      screeningOfficer: '',
+      eccCnc: inquiryType,
+      transactionStatus: '',
+      specificInquiry: '',
+      companyOrApplicationNo: '',
+      clientCallStatus: 'Initialized',
+      thrown: false,
+    });
+
+    await logEvent({
+      actor: req.officer?.name || req.admin?.name || 'Queue Number Officer',
+      action: `Initialized number ${entry.clientCardNo}`,
+      scope: 'Queue No. Initialization',
+      severity: 'Info',
+      source: 'Queue Number Officer',
+      details: `Ready number ${entry.clientCardNo} generated for ${inquiryType}.`,
+    });
+
+    return res.status(201).json({ number: entry });
+  } catch (error) {
+    console.error('Create initialized number error:', error);
+    return res.status(500).json({ message: 'Failed to initialize queue number.' });
+  }
+}
+
+// Throws a ready number to the queue officer assigned to its inquiry type.
+async function throwInitializedNumber(req, res) {
+  try {
+    const { id } = req.params;
+    const entry = await TransactionMonitoring.findById(id);
+
+    if (!entry || entry.clientCallStatus !== 'Initialized') {
+      return res.status(404).json({ message: 'Ready number not found.' });
+    }
+
+    if (entry.thrown) {
+      return res.status(409).json({ message: 'This number has already been thrown.' });
+    }
+
+    entry.thrown = true;
+    await entry.save();
+
+    await logEvent({
+      actor: req.officer?.name || req.admin?.name || 'Queue Number Officer',
+      action: `Threw number ${entry.clientCardNo}`,
+      scope: 'Queue No. Initialization',
+      severity: 'Notice',
+      source: 'Queue Number Officer',
+      details: `Number ${entry.clientCardNo} thrown to the ${entry.eccCnc} queue officer.`,
+    });
+
+    return res.json({ number: entry });
+  } catch (error) {
+    console.error('Throw initialized number error:', error);
+    return res.status(500).json({ message: 'Failed to throw queue number.' });
+  }
+}
+
+// Removes a ready number before it is served (QNO housekeeping).
+async function deleteInitializedNumber(req, res) {
+  try {
+    const { id } = req.params;
+    const entry = await TransactionMonitoring.findById(id);
+
+    if (!entry || entry.clientCallStatus !== 'Initialized') {
+      return res.status(404).json({ message: 'Ready number not found.' });
+    }
+
+    await entry.deleteOne();
+
+    await logEvent({
+      actor: req.officer?.name || req.admin?.name || 'Queue Number Officer',
+      action: `Removed ready number ${entry.clientCardNo}`,
+      scope: 'Queue No. Initialization',
+      severity: 'Warning',
+      source: 'Queue Number Officer',
+      details: `Ready number ${entry.clientCardNo} (${entry.eccCnc}) removed.`,
+    });
+
+    return res.json({ message: 'Ready number removed.' });
+  } catch (error) {
+    console.error('Delete initialized number error:', error);
+    return res.status(500).json({ message: 'Failed to remove queue number.' });
+  }
+}
+
 module.exports = {
   listQueueOfficers,
+  listPublicQueueOfficerSummary,
   createQueueOfficer,
   updateQueueOfficer,
   updateQueueOfficerAccess,
@@ -631,6 +804,10 @@ module.exports = {
   callPortalEntry,
   updatePortalEntryStatus,
   deletePortalEntry,
+  listInitializedNumbers,
+  createInitializedNumber,
+  throwInitializedNumber,
+  deleteInitializedNumber,
 };
 
 async function listPortalTransactionHistory(req, res) {

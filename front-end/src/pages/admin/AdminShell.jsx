@@ -9,6 +9,7 @@ import {
   MenuOutlined,
   MonitorOutlined,
   NotificationOutlined,
+  ReloadOutlined,
   SettingOutlined,
   TeamOutlined,
   ToolOutlined,
@@ -104,6 +105,11 @@ export default function AdminShell({ title, subtitle, children, extra, titleExtr
     const items = [];
     const isDeveloperAccount = admin?.accountType === 'admin' && canView(admin, 'developer');
     const isQueueOfficerAccount = admin?.accountType === 'queue-officer';
+    const canUseQueueOfficerMenu =
+      isQueueOfficerAccount
+      || canView(admin, 'queue-officer-portal')
+      || canView(admin, 'queue-number-initialization')
+      || canView(admin, 'queue-officer-serving-desk');
 
     if (canView(admin, 'dashboard')) {
       items.push({ key: '/home', icon: <DashboardOutlined />, label: 'Dashboard' });
@@ -118,6 +124,9 @@ export default function AdminShell({ title, subtitle, children, extra, titleExtr
           { key: '/home/settings/queue-assigned-officers', icon: <TeamOutlined />, label: 'Queue Officers' },
           { key: '/home/settings/transaction-monitoring', icon: <BarChartOutlined />, label: 'Transactions' },
           { key: '/home/settings/dashboard-display', icon: <MonitorOutlined />, label: 'Queue Display' },
+          { key: '/home/settings/activity-log-maintenance', icon: <FileTextOutlined />, label: 'Activity Logs' },
+          { key: '/home/settings/daily-queue-reset', icon: <ReloadOutlined />, label: 'Daily Queue Reset' },
+          { key: '/home/settings/daily-queue-archives', icon: <DatabaseOutlined />, label: 'Daily Queue Archives' },
         ],
       });
     }
@@ -132,16 +141,20 @@ export default function AdminShell({ title, subtitle, children, extra, titleExtr
           { key: '/home/developer/user-account-management', icon: <UserOutlined />, label: 'User Accounts' },
           { key: '/home/developer/database-status-connections', icon: <DatabaseOutlined />, label: 'DB Status' },
           { key: '/home/developer/app-logs', icon: <FileTextOutlined />, label: 'App Logs' },
+          { key: '/home/queue-officer/queue-number-initialization', icon: <NotificationOutlined />, label: 'Number Init' },
           { key: '/home/queue-officer/my-queue-portal', icon: <IdcardOutlined />, label: 'Queue Portal' },
         ],
       });
     }
 
     // Queue officers get flat direct links — no submenu wrapper
-    if (isQueueOfficerAccount) {
+    if (canUseQueueOfficerMenu) {
       // if (canView(admin, 'queue-officer-serving-desk') || canView(admin, 'queue-officer')) {
       //   items.push({ key: '/home/queue-officer/serving-desk', icon: <TeamOutlined />, label: 'Serving Desk' });
       // }
+      if (canView(admin, 'queue-number-initialization')) {
+        items.push({ key: '/home/queue-officer/queue-number-initialization', icon: <NotificationOutlined />, label: 'Queue No. Initialization' });
+      }
       if (canView(admin, 'queue-officer-portal')) {
         items.push({ key: '/home/queue-officer/my-queue-portal', icon: <IdcardOutlined />, label: 'My Queue Portal' });
       }

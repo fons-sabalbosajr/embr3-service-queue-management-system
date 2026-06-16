@@ -26,18 +26,21 @@ import {
   Row,
   Select,
   Space,
-  Statistic,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from 'antd';
 import dayjs from 'dayjs';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import apiClient from '../../api/client';
+import LoadingScreen from '../../components/LoadingScreen';
 import { exportToCSV, exportToExcel } from '../../utils/exportData';
 import AdminShell from './AdminShell';
 import './AdminDataTables.css';
+
+const TransactionMonitoringForm = lazy(() => import('./transaction-monitoring/TransactionMonitoringForm'))
 
 const { Text } = Typography;
 
@@ -51,17 +54,79 @@ const TXN_EXPORT_COLS = [
   { title: 'Company / App No.', dataIndex: 'companyOrApplicationNo' },
   { title: 'Screening Officer', dataIndex: 'screeningOfficer' },
   { title: 'Queue Status', dataIndex: 'clientCallStatus' },
-  { title: 'Receipt Date', dataIndex: 'receiptDate' },
-  { title: 'Receipt Time', dataIndex: 'receiptTime' },
+  { title: 'Transaction Date Completed', dataIndex: 'transactionDateCompleted' },
   { title: 'Created At', dataIndex: 'createdAt', exportValue: (v) => v ? new Date(v).toLocaleString([], { hour12: true }) : '' },
   { title: 'Updated At', dataIndex: 'updatedAt', exportValue: (v) => v ? new Date(v).toLocaleString([], { hour12: true }) : '' },
 ];
+
+function normalizePermitTab(value) {
+  const raw = String(value || '').trim();
+  const normalized = raw.toUpperCase();
+
+  if (normalized.includes('ECC') || normalized.includes('CNC')) return 'ECC/CNC';
+  if (normalized === 'PTO/DP' || (normalized.includes('PTO') && normalized.includes('DP'))) return 'PTO/DP';
+  if (normalized === 'PCO' || normalized.includes('POLLUTION CONTROL OFFICER')) return 'PCO';
+  if (normalized.includes('HWG') || normalized.includes('HAZ')) return 'HAZ';
+  return raw || 'Other Permits';
+}
+
+function normalizeStatus(value) {
+  if (value === 'Done' || value === 'Assisted' || value === 'Done/Assisted') {
+    return 'Done/Assisted';
+  }
+  return value;
+}
+
+function normalizeLegacyTime(value) {
+  const raw = String(value || '');
+  if (!raw) return '';
+  if (/AM|PM/i.test(raw)) return raw;
+  const [h, m] = raw.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return raw;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function buildTransactionDateCompleted(record) {
+  const normalizedStatus = normalizeStatus(record.clientCallStatus);
+  if (record.receiptDate) {
+    const time = normalizeLegacyTime(record.receiptTime);
+    return time ? `${record.receiptDate} ${time}` : record.receiptDate;
+  }
+
+  // Older records may not have completion receipt fields; fall back to updatedAt
+  // only for completed terminal states so the new UI still shows a sensible date.
+  if (normalizedStatus === 'Done/Assisted' && record.updatedAt) {
+    return new Date(record.updatedAt).toLocaleString([], { hour12: true });
+  }
+
+  return '—';
+}
+
+function resolveTransactionDate(record) {
+  if (record.receiptDate) {
+    const parsed = dayjs(record.receiptDate, ['YYYY-MM-DD', 'MM/DD/YYYY', 'M/D/YYYY'], true)
+    if (parsed.isValid()) return parsed
+  }
+  if (record.updatedAt) {
+    const parsed = dayjs(record.updatedAt)
+    if (parsed.isValid()) return parsed
+  }
+  if (record.createdAt) {
+    const parsed = dayjs(record.createdAt)
+    if (parsed.isValid()) return parsed
+  }
+  return null
+}
+
+function StatusBadge({ value }) {
   const map = {
     CALL:              { color: '#15803d', bg: '#f0fdf4', border: '#bbf7d0', icon: <span className="status-dot-call" style={{ marginRight: 5 }} />, label: 'Now Serving' },
+    Initialized:       { color: '#475569', bg: '#f8fafc', border: '#cbd5e1', icon: <SyncOutlined spin style={{ fontSize: 11, marginRight: 4 }} />, label: 'Initialized' },
     'Waiting to Call': { color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe', icon: <SyncOutlined style={{ fontSize: 10, marginRight: 4 }} />, label: 'Waiting' },
     Queued:            { color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff', icon: <SyncOutlined style={{ fontSize: 10, marginRight: 4 }} />, label: 'Queued' },
-    Done:              { color: '#059669', bg: '#ecfdf5', border: '#a7f3d0', icon: '✓ ', label: 'Done' },
-    Assisted:          { color: '#7c3aed', bg: '#faf5ff', border: '#ddd6fe', icon: '❤ ', label: 'Assisted' },
+    'Done/Assisted':   { color: '#059669', bg: '#ecfdf5', border: '#a7f3d0', icon: '✓ ', label: 'Done/Assisted' },
     'CLIENT MISSING':  { color: '#b91c1c', bg: '#fef2f2', border: '#fecaca', icon: <span className="status-dot-missing" style={{ marginRight: 5 }} />, label: 'Missing' },
     'On Hold':         { color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: '⏸ ', label: 'On Hold' },
     Skipped:           { color: '#ea580c', bg: '#fff7ed', border: '#fed7aa', icon: '⏭ ', label: 'Skipped' },
@@ -88,6 +153,9 @@ export default function SettingsTransactionMonitoring() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState(null);
   const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [dateRange, setDateRange] = useState(null);
 
   const loadTransactions = async () => {
     setLoading(true);
@@ -163,15 +231,40 @@ export default function SettingsTransactionMonitoring() {
     }
   };
 
+  const preparedTransactions = useMemo(() => transactions.map((item) => ({
+    ...item,
+    clientCallStatus: normalizeStatus(item.clientCallStatus),
+    permitTab: normalizePermitTab(item.eccCnc),
+    transactionDateCompleted: buildTransactionDateCompleted(item),
+  })), [transactions]);
+
+  const permitTabs = useMemo(() => {
+    const tabs = Array.from(new Set(preparedTransactions.map((item) => item.permitTab).filter(Boolean)));
+    return ['all', ...tabs];
+  }, [preparedTransactions]);
+
+  useEffect(() => {
+    if (!permitTabs.includes(activeTab)) {
+      setActiveTab('all');
+    }
+  }, [activeTab, permitTabs]);
+
   const filteredTransactions = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    if (!query) {
-      return transactions;
-    }
+    return preparedTransactions.filter((item) => {
+      const matchesTab = activeTab === 'all' || item.permitTab === activeTab;
+      const matchesStatus = statusFilter === 'all' || item.clientCallStatus === statusFilter;
+      const transactionDate = resolveTransactionDate(item);
+      const matchesDate = !dateRange || !dateRange[0] || !dateRange[1]
+        ? true
+        : (transactionDate && transactionDate.isAfter(dateRange[0].startOf('day').subtract(1, 'millisecond')) && transactionDate.isBefore(dateRange[1].endOf('day').add(1, 'millisecond')));
+      if (!matchesTab) return false;
+      if (!matchesStatus) return false;
+      if (!matchesDate) return false;
+      if (!query) return true;
 
-    return transactions.filter((item) =>
-      [
+      return [
         item.clientCardNo,
         item.clientStatus,
         item.screeningOfficer,
@@ -179,20 +272,13 @@ export default function SettingsTransactionMonitoring() {
         item.transactionStatus,
         item.companyOrApplicationNo,
         item.clientCallStatus,
+        item.transactionDateCompleted,
+        item.permitTab,
       ]
         .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query))
-    );
-  }, [search, transactions]);
-
-  const stats = useMemo(
-    () => ({
-      total: transactions.length,
-      call: transactions.filter((item) => item.clientCallStatus === 'CALL').length,
-      done: transactions.filter((item) => item.clientCallStatus === 'Done').length,
-    }),
-    [transactions]
-  );
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [activeTab, dateRange, preparedTransactions, search, statusFilter]);
 
   const columns = [
     {
@@ -258,29 +344,12 @@ export default function SettingsTransactionMonitoring() {
       render: (v) => <Text style={{ fontSize: 11 }} type="secondary">{v || '—'}</Text>,
     },
     {
-      title: <Space size={4}><CalendarOutlined /><span>Date &amp; Time</span></Space>,
+      title: <Space size={4}><CalendarOutlined /><span>Transaction Date Completed</span></Space>,
       key: 'datetime',
-      width: 120,
+      width: 180,
       render: (_, r) => (
         <div>
-          <Text style={{ fontSize: 11 }}>{r.receiptDate || '—'}</Text>
-          {r.receiptTime ? (
-            <>
-              <br />
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                {/* Normalise stored 24-h or 12-h string to 12-h AM/PM */}
-                {(() => {
-                  const raw = String(r.receiptTime || '');
-                  if (/AM|PM/i.test(raw)) return raw;
-                  const [h, m] = raw.split(':').map(Number);
-                  if (isNaN(h) || isNaN(m)) return raw;
-                  const ampm = h >= 12 ? 'PM' : 'AM';
-                  const h12 = h % 12 || 12;
-                  return `${String(h12).padStart(2,'0')}:${String(m).padStart(2,'0')} ${ampm}`;
-                })()}
-              </Text>
-            </>
-          ) : null}
+          <Text style={{ fontSize: 11 }}>{r.transactionDateCompleted || '—'}</Text>
         </div>
       ),
     },
@@ -349,21 +418,44 @@ export default function SettingsTransactionMonitoring() {
         </Space>
       }
     >
-      <div className="admin-data-stat-grid" style={{ marginBottom: 20 }}>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Total Transactions" value={stats.total} />
-        </Card>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Awaiting Call" value={stats.call} />
-        </Card>
-        <Card bordered={false} className="admin-data-stat-card">
-          <Statistic title="Completed" value={stats.done} />
-        </Card>
-      </div>
-
       <Row gutter={[20, 20]}>
         <Col xs={24}>
           <Card bordered={false} className="admin-data-table-card">
+            <Tabs
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              items={permitTabs.map((tab) => ({
+                key: tab,
+                label: tab === 'all' ? 'All Transactions' : tab,
+              }))}
+              style={{ marginBottom: 12 }}
+            />
+            <Space wrap size={[8, 8]} style={{ marginBottom: 12 }}>
+              <Select
+                value={statusFilter}
+                onChange={setStatusFilter}
+                style={{ minWidth: 180 }}
+                options={[
+                  { value: 'all', label: 'All Statuses' },
+                  { value: 'Initialized', label: 'Initialized' },
+                  { value: 'Queued', label: 'Queued' },
+                  { value: 'Waiting to Call', label: 'Waiting to Call' },
+                  { value: 'CALL', label: 'CALL' },
+                  { value: 'On Hold', label: 'On Hold' },
+                  { value: 'Skipped', label: 'Skipped' },
+                  { value: 'CLIENT MISSING', label: 'Client Missing' },
+                  { value: 'Done/Assisted', label: 'Done/Assisted' },
+                ]}
+              />
+              <DatePicker.RangePicker
+                value={dateRange}
+                onChange={setDateRange}
+                placeholder={['Start date', 'End date']}
+              />
+              <Button onClick={() => { setStatusFilter('all'); setDateRange(null); setSearch(''); }}>
+                Reset Filters
+              </Button>
+            </Space>
             <Table
               className="admin-data-table"
               rowKey="_id"
@@ -382,6 +474,7 @@ export default function SettingsTransactionMonitoring() {
               rowClassName={(record) => {
                 const s = record.clientCallStatus;
                 if (s === 'CALL') return 'txn-row-call';
+                if (s === 'Initialized') return 'txn-row-initialized';
                 if (s === 'CLIENT MISSING') return 'txn-row-missing';
                 if (s === 'Done') return 'txn-row-done';
                 if (s === 'Assisted') return 'txn-row-assisted';
@@ -395,65 +488,20 @@ export default function SettingsTransactionMonitoring() {
       <Modal
         title={editingTransaction ? 'Edit Transaction' : 'Create Transaction'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => !saving && setModalOpen(false)}
         onOk={() => form.submit()}
         confirmLoading={saving}
+        closable={!saving}
+        maskClosable={!saving}
         width={760}
       >
-        <Form form={form} layout="vertical" onFinish={handleSubmit}>
-          <Row gutter={12}>
-            <Col span={12}>
-              <Form.Item name="clientCardNo" label="CLIENT CARD NO." rules={[{ required: true, message: 'Please enter client card number.' }]}>
-                <Input placeholder="EMB-QMS2026-TRX-001" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="clientStatus" label="Client Status" rules={[{ required: true, message: 'Please enter client status.' }]}>
-                <Input placeholder="Waiting for screening" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={12}>
-            <Col span={12}>
-              <Form.Item name="screeningOfficer" label="Screening Officer" rules={[{ required: true, message: 'Please enter screening officer.' }]}>
-                <Input placeholder="Juan Dela Cruz" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="eccCnc" label="ECC/CNC" rules={[{ required: true, message: 'Please enter ECC/CNC value.' }]}>
-                <Input placeholder="ECC" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="transactionStatus" label="Transaction Status" rules={[{ required: true, message: 'Please enter transaction status.' }]}>
-            <Input placeholder="Screening in progress" />
-          </Form.Item>
-          <Form.Item name="companyOrApplicationNo" label="Company Name or Clearance/Permit App. No.">
-            <Input placeholder="ACME Corp. / APP-2026-001" />
-          </Form.Item>
-          <Row gutter={12}>
-            <Col span={12}>
-              <Form.Item name="receiptDate" label="Date of Receipt Uploaded">
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="receiptTime" label="Time of Receipt Uploaded">
-                <Input placeholder="09:45 AM" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="clientCallStatus" label="Client Status (CALL/CLIENT MISSING/Done/Assisted)" rules={[{ required: true, message: 'Please select client call status.' }]}>
-            <Select
-              options={[
-                { value: 'CALL', label: 'CALL' },
-                { value: 'CLIENT MISSING', label: 'CLIENT MISSING' },
-                { value: 'Done', label: 'Done' },
-                { value: 'Assisted', label: 'Assisted' },
-              ]}
-            />
-          </Form.Item>
-        </Form>
+        {saving ? (
+          <LoadingScreen compact title="Saving transaction" description="Validating permit fields and updating transaction monitoring." />
+        ) : (
+        <Suspense fallback={<LoadingScreen compact title="Loading transaction form" description="Preparing the transaction editor fields." />}>
+          <TransactionMonitoringForm form={form} onFinish={handleSubmit} />
+        </Suspense>
+        )}
       </Modal>
     </AdminShell>
   );
